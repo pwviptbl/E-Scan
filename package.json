@@ -1,0 +1,12 @@
+{
+  "name": "ecidade-dast",
+  "version": "1.0.0",
+  "description": "Headless Dynamic Application Security Testing (DAST) for E-cidade",
+  "main": "cli.py",
+  "scripts": {
+    "test:cypress": "cypress run"
+  },
+  "devDependencies": {
+    "cypress": "^14.5.4"
+  }
+}

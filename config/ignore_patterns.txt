@@ -1,0 +1,27 @@
+# =============================================================================
+# Arquivos, endpoints e padrões para ignorar na captura do Proxy DAST
+# (Um por linha. Comentários começam com #. Linhas em branco são ignoradas)
+# =============================================================================
+
+# RPCs de help e campos informativos da interface
+con4_dbhelp.RPC.php
+
+# Carregamento de skins e imagens dinâmicas
+skins/img.php
+
+# Carregamento estático de arquivo de menu do desktop
+extension/desktop/menu/getMenuArquivo
+getMenuArquivo
+
+# Arquivos/Recursos estáticos ou fontes
+.png
+.jpg
+.jpeg
+.gif
+.ico
+.svg
+.woff
+.woff2
+.ttf
+.css
+.js

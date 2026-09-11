@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+
+# Virtual Environment
+.venv/
+venv/
+
+# Node / Cypress
+node_modules
+cypress/screenshots/
+cypress/downloads/
+
+# Execution outputs
+logs/*.json
+reports/*.md
+reports/*.json
+!reports/.gitkeep
+!logs/.gitkeep
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Credentials / Local configs
+config/defectdojo.json
+!config/defectdojo.example.json
+

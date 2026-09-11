@@ -1,0 +1,15 @@
+{
+  "defectdojo": {
+    "url": "http://127.0.0.1:8080",
+    "token": "SEU_TOKEN_DEFECTDOJO_AQUI",
+    "product_name": "E-cidade",
+    "engagement_name": "Auditoria DAST E-cidade",
+    "test_id": 79,
+    "test_title": "DAST - Auditoria Dinâmica E-cidade",
+    "auto_upload": false,
+    "active": true,
+    "verified": true,
+    "close_old_findings": false,
+    "environment": "Development"
+  }
+}
