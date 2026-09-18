@@ -3,6 +3,7 @@ Motor de Varredura DAST (Ativa e Passiva) para o E-cidade
 Executa testes de segurança nas rotas capturadas da campanha.
 """
 import os
+import re
 import sys
 import json
 import time
@@ -19,6 +20,7 @@ class DastScanner:
         self.enabled_types = [t.strip().lower() for t in types.split(",")]
         self.param_location = param_location.lower()
         self.modules = {}
+        self.routines_map = {}
 
         if "sqli" in self.enabled_types:
             self.modules["SQLi"] = SqlInjectionModule()
@@ -31,15 +33,77 @@ class DastScanner:
 
         self.findings = []
 
+    def resolve_routine(self, route):
+        """Identifica com precisão a rotina, sub-rotina ou tela do E-cidade associada à requisição."""
+        # 1. Metadado explícito presente na rota
+        if route.get("routine"):
+            return route.get("routine"), route.get("action_file", "")
+
+        # 2. Header de rastreabilidade injetado pelo Cypress (x-dast-routine)
+        headers = route.get("request_headers", {})
+        for k, v in headers.items():
+            if k.lower() == "x-dast-routine" and v:
+                action_h = headers.get("x-dast-action") or headers.get("X-DAST-Action") or ""
+                return v, action_h
+
+        url = route.get("url", "")
+        parsed = urlparse(url)
+        qs = parse_qs(parsed.query)
+
+        action = qs.get("action", [""])[0]
+        if not action:
+            php_match = re.search(r"/([a-zA-Z0-9_]+\.php)", parsed.path)
+            if php_match:
+                action = php_match.group(1)
+
+        # 3. Consulta no mapa de rotinas extraído dinamicamente pelo crawler
+        if self.routines_map and action:
+            info = self.routines_map.get(action)
+            if isinstance(info, dict):
+                return info.get("breadcrumb", action), action
+            elif isinstance(info, str):
+                return info, action
+
+        # 4. Endpoints estruturais bem conhecidos do E-cidade
+        if "extension/desktop/Menu/getModulos" in parsed.path:
+            return "Menu Principal > Seleção de Módulos", ""
+        if "extension/desktop/Menu/getItensMenu" in parsed.path:
+            return "Menu Principal > Itens de Menu", ""
+        if "extension/desktop/Menu/getAreas" in parsed.path:
+            return "Menu Principal > Áreas", ""
+        if "extension/desktop/desktop" in parsed.path:
+            return "Desktop / Painel de Trabalho", ""
+        if "v4/login" in parsed.path:
+            return "Autenticação / Login", ""
+
+        if action:
+            return f"Rotina ({action})", action
+
+        return "Geral / Infraestrutura", ""
+
     def scan_campaign(self, campaign_data, active_only=False):
         routes = campaign_data.get("routes", [])
         scan_label = "ATIVO (Apenas injeções)" if active_only else "COMPLETO (Ativo + Passivo)"
         print(f"\n[*] Iniciando auditoria DAST [{scan_label}] em {len(routes)} rotas testáveis...")
 
+        # Carrega mapa de rotinas da campanha ou do disco
+        self.routines_map = campaign_data.get("routines_map") or {}
+        if not self.routines_map and os.path.exists("logs/routines_map.json"):
+            try:
+                with open("logs/routines_map.json", "r", encoding="utf-8") as f:
+                    self.routines_map = json.load(f)
+            except Exception:
+                pass
+
         for idx, route in enumerate(routes, 1):
             method = route.get("method", "GET").upper()
             url = route.get("url", "")
-            print(f"[{idx}/{len(routes)}] {method} {url}")
+            routine, action_file = self.resolve_routine(route)
+            route["routine"] = routine
+            route["action_file"] = action_file
+
+            routine_display = f" | Rotina: {routine}" if routine else ""
+            print(f"[{idx}/{len(routes)}] {method} {url}{routine_display}")
 
             # 1. Auditoria Passiva de Headers e Cookies (se não for active_only)
             if not active_only:
@@ -53,6 +117,8 @@ class DastScanner:
     def _passive_audit(self, route):
         headers = {k.lower(): v for k, v in route.get("response_headers", {}).items()}
         url = route.get("url", "")
+        routine = route.get("routine", "Geral")
+        action_file = route.get("action_file", "")
 
         # Cookie Security
         cookies = headers.get("set-cookie", "")
@@ -65,6 +131,8 @@ class DastScanner:
                     "url": url,
                     "method": route.get("method"),
                     "param": "Set-Cookie",
+                    "routine": routine,
+                    "action_file": action_file,
                     "evidence": cookies,
                     "description": "O cookie de sessão do PHP/E-cidade não possui a diretiva HttpOnly, permitindo roubo de sessão via XSS."
                 })
@@ -76,6 +144,8 @@ class DastScanner:
                     "url": url,
                     "method": route.get("method"),
                     "param": "Set-Cookie",
+                    "routine": routine,
+                    "action_file": action_file,
                     "evidence": cookies,
                     "description": "Cookie de sessão desprotegido contra CSRF cross-origin."
                 })
@@ -89,6 +159,8 @@ class DastScanner:
                 "url": url,
                 "method": route.get("method"),
                 "param": "Headers",
+                "routine": routine,
+                "action_file": action_file,
                 "evidence": "X-Frame-Options e CSP ausentes",
                 "description": "A aplicação não define restrições de frame-ancestors, permitindo embedding não autorizado em iframes de terceiros."
             })
@@ -98,6 +170,8 @@ class DastScanner:
         method = route.get("method", "GET").upper()
         req_headers = route.get("request_headers", {})
         body = route.get("request_body", "")
+        routine = route.get("routine", "Geral")
+        action_file = route.get("action_file", "")
 
         request_node = {
             "id": 1,
@@ -129,7 +203,7 @@ class DastScanner:
                     "parameter_name": param_name,
                     "original_value": orig_val
                 }
-                self._run_modules_on_point(request_node, inj_point)
+                self._run_modules_on_point(request_node, inj_point, routine=routine, action_file=action_file)
 
         # Testa parâmetros de Form Body
         if self.param_location in ("all", "body", "body-query"):
@@ -142,9 +216,9 @@ class DastScanner:
                     "parameter_name": param_name,
                     "original_value": orig_val
                 }
-                self._run_modules_on_point(request_node, inj_point)
+                self._run_modules_on_point(request_node, inj_point, routine=routine, action_file=action_file)
 
-    def _run_modules_on_point(self, request_node, inj_point):
+    def _run_modules_on_point(self, request_node, inj_point, routine="Geral", action_file=""):
         print(f"   -> [Ativo] Testando {inj_point['location']}: '{inj_point['param_name']}'...")
         for mod_name, mod_instance in self.modules.items():
             try:
@@ -158,10 +232,12 @@ class DastScanner:
                             "url": request_node["url"],
                             "method": request_node["method"],
                             "param": inj_point["param_name"],
+                            "routine": routine,
+                            "action_file": action_file,
                             "evidence": str(v.evidence)[:300],
                             "description": v.description
                         })
-                        print(f"      [!] VULNERABILIDADE DETECTADA: [{v.severity}] {v.name} em {inj_point['param_name']}")
+                        print(f"      [!] VULNERABILIDADE DETECTADA: [{v.severity}] {v.name} em {inj_point['param_name']} (Rotina: {routine})")
             except Exception as e:
                 pass
 
@@ -196,12 +272,42 @@ class DastScanner:
         content.append(f"| 🔵 Baixa | {low} |")
         content.append(f"| **Total** | **{len(self.findings)}** |\n")
 
+        # Tabela consolidada por rotina/tela
+        routine_stats = {}
+        for f in self.findings:
+            r = f.get("routine") or "Geral"
+            act = f.get("action_file") or "-"
+            key = (r, act)
+            if key not in routine_stats:
+                routine_stats[key] = {"crítica": 0, "alta": 0, "média": 0, "baixa": 0, "total": 0}
+            sev = f.get("severity", "").lower()
+            if sev in ("crítica", "critical"):
+                routine_stats[key]["crítica"] += 1
+            elif sev in ("alta", "high"):
+                routine_stats[key]["alta"] += 1
+            elif sev in ("média", "media", "medium"):
+                routine_stats[key]["média"] += 1
+            elif sev in ("baixa", "low"):
+                routine_stats[key]["baixa"] += 1
+            routine_stats[key]["total"] += 1
+
+        if routine_stats:
+            content.append(f"### 1.1 Resumo Consolidado por Rotina / Tela:")
+            content.append(f"| Rotina / Tela | Arquivo (Action) | 🔴 Crítica | 🟠 Alta | 🟡 Média | 🔵 Baixa | **Total** |")
+            content.append(f"| :--- | :--- | :---: | :---: | :---: | :---: | :---: |")
+            for (r, act), c in sorted(routine_stats.items(), key=lambda x: x[1]["total"], reverse=True):
+                content.append(f"| {r} | `{act}` | {c['crítica']} | {c['alta']} | {c['média']} | {c['baixa']} | **{c['total']}** |")
+            content.append("")
+
         content.append(f"## 2. Detalhamento dos Achados\n")
         if not self.findings:
             content.append(f"✅ Nenhuma vulnerabilidade ativa ou passiva detectada no escopo testado.\n")
         else:
             for idx, f in enumerate(self.findings, 1):
                 content.append(f"### 2.{idx} [{f['severity'].upper()}] {f['title']}")
+                content.append(f"- **Rotina / Tela:** `{f.get('routine', 'Geral')}`")
+                if f.get("action_file"):
+                    content.append(f"- **Arquivo (Action):** `{f['action_file']}`")
                 content.append(f"- **Endpoint:** `{f['method']} {f['url']}`")
                 content.append(f"- **Parâmetro:** `{f['param']}`")
                 content.append(f"- **Tipo/CWE:** {f['type']}")
@@ -268,15 +374,22 @@ class DastScanner:
             param_str = f.get("param", "")
             title_suffix = f" no parâmetro '{param_str}'" if param_str else ""
 
+            routine_str = f.get("routine", "")
+            action_str = f.get("action_file", "")
+            routine_block = f"**Rotina / Tela:** `{routine_str}`\n" if routine_str else ""
+            if action_str:
+                routine_block += f"**Arquivo (Action):** `{action_str}`\n"
+
             evidence_str = str(f.get("evidence", ""))
             full_description = (
                 f"{f['description']}\n\n"
+                f"{routine_block}"
                 f"**Endpoint:** `{f['method']} {f['url']}`\n"
                 f"**Parâmetro:** `{param_str}`\n\n"
                 f"**Evidência / Resposta do Servidor:**\n```text\n{evidence_str}\n```"
             )
 
-            dojo_findings.append({
+            finding_dict = {
                 "title": f"{f['title']}{title_suffix}",
                 "date": today,
                 "severity": sev,
@@ -287,10 +400,14 @@ class DastScanner:
                 "active": True,
                 "verified": True,
                 "false_p": False,
-                "steps_to_reproduce": f"1. Enviar requisição {f['method']} para `{f['url']}`.\n2. Injetar payload de teste no parâmetro `{param_str}`.\n3. Observar quebra sintática de query / execução na resposta.",
+                "steps_to_reproduce": f"1. Acessar a rotina '{routine_str}'.\n2. Enviar requisição {f['method']} para `{f['url']}`.\n3. Injetar payload de teste no parâmetro `{param_str}`.\n4. Observar quebra sintática de query / execução na resposta.",
                 "severity_justification": f"Severidade {sev} baseada no impacto direto da falha {f['title']}.",
                 "references": f"https://cwe.mitre.org/data/definitions/{cwe}.html" if cwe else ""
-            })
+            }
+            if action_str:
+                finding_dict["file_path"] = action_str
+
+            dojo_findings.append(finding_dict)
 
         data = {"findings": dojo_findings}
         with open(output_path, "w", encoding="utf-8") as out:

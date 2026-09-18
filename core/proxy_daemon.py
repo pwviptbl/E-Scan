@@ -53,6 +53,9 @@ class DastCaptureAddon:
 
         body_str = req.get_text() if req.raw_content else ""
 
+        routine_header = headers_dict.get("x-dast-routine") or headers_dict.get("X-DAST-Routine") or ""
+        action_header = headers_dict.get("x-dast-action") or headers_dict.get("X-DAST-Action") or ""
+
         entry = {
             "id": len(self.history) + 1,
             "method": req.method.upper(),
@@ -63,6 +66,8 @@ class DastCaptureAddon:
             "request_body": body_str,
             "response_status": res.status_code,
             "response_headers": res_headers_dict,
+            "routine": routine_header,
+            "action_file": action_header
         }
 
         # Ignora recursos estáticos (.js, .css, imagens, etc.)
@@ -133,6 +138,17 @@ class ProxyDaemon:
         )
         if metadata:
             campaign["execution_metadata"] = metadata
+
+        # Embute mapa de rotinas se gerado pelo crawler
+        routines_map = {}
+        if os.path.exists("logs/routines_map.json"):
+            try:
+                with open("logs/routines_map.json", "r", encoding="utf-8") as rf:
+                    routines_map = json.load(rf)
+            except Exception:
+                pass
+        if routines_map:
+            campaign["routines_map"] = routines_map
 
         with open(output_file, "w", encoding="utf-8") as f:
             json.dump(campaign, f, indent=2, ensure_ascii=False)

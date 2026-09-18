@@ -66,6 +66,19 @@ describe("E-cidade DAST - Crawler Automático de Menus e Rotinas", () => {
   };
 
   it(`Percorre dinamicamente as rotinas de: ${areaTarget} > ${moduloTarget || "*"} > ${categoriaTarget || "*"}`, () => {
+    let currentRoutine = null;
+    let currentAction = null;
+
+    // Injeta headers de rastreabilidade de rotina em todas as requisições geradas pelo navegador
+    cy.intercept("**", (req) => {
+      if (currentRoutine) {
+        req.headers["x-dast-routine"] = currentRoutine;
+      }
+      if (currentAction) {
+        req.headers["x-dast-action"] = currentAction;
+      }
+    });
+
     abrirNavegacaoBase();
 
     // Aguarda o container de itens do módulo ser carregado
@@ -133,9 +146,25 @@ describe("E-cidade DAST - Crawler Automático de Menus e Rotinas", () => {
 
       cy.task("log", `[DAST] Encontradas ${totalFound} rotinas terminais. Executando: ${leaves.length}...`);
 
+      // Exporta mapa completo das rotinas mapeadas para correlação no Scanner
+      const routinesMap = {};
+      leaves.forEach((l) => {
+        routinesMap[l.action] = {
+          breadcrumb: l.breadcrumb,
+          nome: l.nome,
+          action: l.action,
+          id: l.id
+        };
+      });
+      cy.writeFile("logs/routines_map.json", routinesMap);
+
       // Executa sequencialmente cada rotina terminal via navegação DOM
       leaves.forEach((leaf, idx) => {
         cy.task("log", `[DAST] [${idx + 1}/${leaves.length}] Executando: ${leaf.breadcrumb} (${leaf.action})`);
+
+        // Define a rotina ativa para os interceptors HTTP
+        currentRoutine = leaf.breadcrumb;
+        currentAction = leaf.action;
 
         // 1. Limpa janelas abertas
         cy.closeAllDesktopWindows();
@@ -166,6 +195,10 @@ describe("E-cidade DAST - Crawler Automático de Menus e Rotinas", () => {
 
         // 7. Fecha todas as janelas após a execução
         cy.closeAllDesktopWindows();
+
+        // Limpa contexto da rotina ativa
+        currentRoutine = null;
+        currentAction = null;
       });
     });
   });
