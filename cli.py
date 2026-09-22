@@ -41,11 +41,12 @@ def main():
 @click.option("--campaign-out", default=None, help="Arquivo JSON para exportação da campanha (padrão: nome gerado por data/escopo).")
 @click.option("--report", default=None, help="Arquivo Markdown para o relatório final.")
 @click.option("--dojo-product", default=None, help="Nome do produto no DefectDojo.")
+@click.option("--dojo-engagement", default=None, help="ID numérico ou nome do engagement no DefectDojo (padrão: config/defectdojo.json).")
 @click.option("--dojo-test-id", default=None, type=int, help="ID numérico do teste no DefectDojo para reimportar/atualizar.")
 @click.option("--dojo-test-title", default=None, help="Título descritivo do teste no DefectDojo.")
 @click.option("--dojo-upload", is_flag=True, default=False, help="Força envio ao DefectDojo usando config/defectdojo.json.")
 @click.option("--fail-on-findings", is_flag=True, default=False, help="Retorna Exit Code 1 se encontrar vulnerabilidades Críticas/Altas (CI/CD).")
-def run_dast(url, area, modulo, categoria, subcategoria, rotina, max_routines, spec, port, scan_mode, types, params, active_only, campaign_out, report, dojo_product, dojo_test_id, dojo_test_title, dojo_upload, fail_on_findings):
+def run_dast(url, area, modulo, categoria, subcategoria, rotina, max_routines, spec, port, scan_mode, types, params, active_only, campaign_out, report, dojo_product, dojo_engagement, dojo_test_id, dojo_test_title, dojo_upload, fail_on_findings):
     """Executa o ciclo completo de DAST: sobe proxy, navega com Cypress, audita e gera relatório."""
     start_time = time.time()
     now_dt = datetime.now()
@@ -199,19 +200,55 @@ def run_dast(url, area, modulo, categoria, subcategoria, rotina, max_routines, s
         pass
 
     dojo_conf = load_dojo_config()
-    should_upload = dojo_upload or bool(dojo_product) or (dojo_test_id is not None) or dojo_conf.get("auto_upload", False)
+    should_upload = dojo_upload or bool(dojo_product) or bool(dojo_engagement) or (dojo_test_id is not None) or dojo_conf.get("auto_upload", False)
     if should_upload:
         click.echo(click.style(f"\n[*] Processando envio dos achados para o DefectDojo...", fg="cyan"))
+
+        # Monta Título e Descrição automáticos para o Teste no DefectDojo
+        scope_hierarchy = [p for p in [area, modulo, categoria, subcategoria, rotina] if p]
+        scope_title = " > ".join(scope_hierarchy) if scope_hierarchy else "Auditoria Geral"
+        dojo_actual_title = dojo_test_title or f"DAST - {scope_title}"
+
+        scope_desc_lines = [
+            "Auditoria de Segurança Dinâmica (DAST) automatizada E-cidade.",
+            "",
+            "**Escopo Executado:**",
+            f"- **Área:** {area}"
+        ]
+        if modulo:
+            scope_desc_lines.append(f"- **Módulo:** {modulo}")
+        if categoria:
+            scope_desc_lines.append(f"- **Categoria:** {categoria}")
+        if subcategoria:
+            scope_desc_lines.append(f"- **Subcategoria:** {subcategoria}")
+        if rotina:
+            scope_desc_lines.append(f"- **Rotina:** {rotina}")
+        else:
+            scope_desc_lines.append("- **Rotinas:** Todas da categoria/módulo")
+
+        dojo_actual_desc = "\n".join(scope_desc_lines)
+        dojo_tags = [p for p in [area, modulo, categoria, subcategoria] if p] + ["DAST"]
+
+        is_eng_id = dojo_engagement and str(dojo_engagement).isdigit()
         ok, res, mode = upload_scan_to_defectdojo(
             actual_dojo,
             product_name=dojo_product,
+            engagement_name=dojo_engagement if (dojo_engagement and not is_eng_id) else None,
+            engagement_id=int(dojo_engagement) if is_eng_id else None,
             test_id=dojo_test_id,
-            test_title=dojo_test_title,
+            test_title=dojo_actual_title,
+            test_description=dojo_actual_desc,
+            tags=dojo_tags,
             config=dojo_conf
         )
         if ok:
-            t_id = res.get("test") if isinstance(res, dict) else "OK"
-            click.echo(click.style(f"[✓] Achados enviados ao DefectDojo com sucesso! ({mode} | Test ID: {t_id})", fg="green", bold=True))
+            t_id = res.get("test_id") or res.get("test") if isinstance(res, dict) else "OK"
+            t_url = res.get("test_url", "") if isinstance(res, dict) else ""
+            click.echo(click.style(f"[✓] Achados enviados ao DefectDojo com sucesso!", fg="green", bold=True))
+            click.echo(click.style(f"    • Modo: {mode}", fg="cyan"))
+            click.echo(click.style(f"    • Test ID: {t_id}", fg="green", bold=True))
+            if t_url:
+                click.echo(click.style(f"    • Link direto: {t_url}", fg="bright_blue", bold=True))
         else:
             click.echo(click.style(f"[!] Falha ao enviar para o DefectDojo ({mode}): {res}", fg="yellow"))
 
@@ -233,11 +270,12 @@ def run_dast(url, area, modulo, categoria, subcategoria, rotina, max_routines, s
 @click.option("--active-only", is_flag=True, default=True, help="Executa apenas testes ativos (ignora passivos de cookies/headers).", show_default=True)
 @click.option("--report", default=None, help="Arquivo Markdown para o relatório final.")
 @click.option("--dojo-product", default=None, help="Nome do produto no DefectDojo.")
+@click.option("--dojo-engagement", default=None, help="ID numérico ou nome do engagement no DefectDojo (padrão: config/defectdojo.json).")
 @click.option("--dojo-test-id", default=None, type=int, help="ID numérico do teste no DefectDojo para reimportar/atualizar.")
 @click.option("--dojo-test-title", default=None, help="Título descritivo do teste no DefectDojo.")
 @click.option("--dojo-upload", is_flag=True, default=False, help="Força envio ao DefectDojo usando config/defectdojo.json.")
 @click.option("--fail-on-findings", is_flag=True, default=False, help="Retorna Exit Code 1 se encontrar vulnerabilidades Críticas/Altas.")
-def scan_campaign_cmd(campaign, types, params, active_only, report, dojo_product, dojo_test_id, dojo_test_title, dojo_upload, fail_on_findings):
+def scan_campaign_cmd(campaign, types, params, active_only, report, dojo_product, dojo_engagement, dojo_test_id, dojo_test_title, dojo_upload, fail_on_findings):
     """Executa auditoria diretamente sobre uma campanha salva, sem rodar o Cypress."""
     start_time = time.time()
     now_dt = datetime.now()
@@ -300,19 +338,35 @@ def scan_campaign_cmd(campaign, types, params, active_only, report, dojo_product
         pass
 
     dojo_conf = load_dojo_config()
-    should_upload = dojo_upload or bool(dojo_product) or (dojo_test_id is not None) or dojo_conf.get("auto_upload", False)
+    should_upload = dojo_upload or bool(dojo_product) or bool(dojo_engagement) or (dojo_test_id is not None) or dojo_conf.get("auto_upload", False)
     if should_upload:
         click.echo(click.style(f"\n[*] Processando envio dos achados para o DefectDojo...", fg="cyan"))
+
+        dojo_actual_title = dojo_test_title or f"DAST - {scope_str}"
+        dojo_actual_desc = f"Auditoria de Segurança Dinâmica (DAST) automatizada E-cidade.\n\n**Escopo Executado:**\n- **Trilha / Escopo:** {scope_str}\n- **Campanha Fonte:** `{campaign}`"
+        raw_tags = [s.strip() for s in scope_str.split(">")] + ["DAST"]
+        dojo_tags = [t for t in raw_tags if t]
+
+        is_eng_id = dojo_engagement and str(dojo_engagement).isdigit()
         ok, res, mode = upload_scan_to_defectdojo(
             actual_dojo,
             product_name=dojo_product,
+            engagement_name=dojo_engagement if (dojo_engagement and not is_eng_id) else None,
+            engagement_id=int(dojo_engagement) if is_eng_id else None,
             test_id=dojo_test_id,
-            test_title=dojo_test_title,
+            test_title=dojo_actual_title,
+            test_description=dojo_actual_desc,
+            tags=dojo_tags,
             config=dojo_conf
         )
         if ok:
-            t_id = res.get("test") if isinstance(res, dict) else "OK"
-            click.echo(click.style(f"[✓] Achados enviados ao DefectDojo com sucesso! ({mode} | Test ID: {t_id})", fg="green", bold=True))
+            t_id = res.get("test_id") or res.get("test") if isinstance(res, dict) else "OK"
+            t_url = res.get("test_url", "") if isinstance(res, dict) else ""
+            click.echo(click.style(f"[✓] Achados enviados ao DefectDojo com sucesso!", fg="green", bold=True))
+            click.echo(click.style(f"    • Modo: {mode}", fg="cyan"))
+            click.echo(click.style(f"    • Test ID: {t_id}", fg="green", bold=True))
+            if t_url:
+                click.echo(click.style(f"    • Link direto: {t_url}", fg="bright_blue", bold=True))
         else:
             click.echo(click.style(f"[!] Falha ao enviar para o DefectDojo ({mode}): {res}", fg="yellow"))
 
@@ -329,7 +383,7 @@ def scan_campaign_cmd(campaign, types, params, active_only, report, dojo_product
 @main.command("dojo-import")
 @click.option("--file", "findings_file", default="reports/defectdojo_findings_latest.json", help="Arquivo JSON de findings para o DefectDojo.", show_default=True)
 @click.option("--product", default=None, help="Nome do produto no DefectDojo (padrão: config/defectdojo.json).")
-@click.option("--engagement", default=None, help="Nome do engagement (padrão: config/defectdojo.json).")
+@click.option("--engagement", default=None, help="ID numérico ou nome do engagement (padrão: config/defectdojo.json).")
 @click.option("--test-id", default=None, type=int, help="ID numérico do teste no DefectDojo para reimportar/atualizar.")
 @click.option("--test-title", default=None, help="Título do teste no DefectDojo.")
 def dojo_import_cmd(findings_file, product, engagement, test_id, test_title):
@@ -342,29 +396,39 @@ def dojo_import_cmd(findings_file, product, engagement, test_id, test_title):
     target_test_id = test_id if test_id is not None else conf.get("test_id")
     target_product = product or conf.get("product_name") or "E-cidade"
     target_engagement = engagement or conf.get("engagement_name") or "Auditoria DAST E-cidade"
+    target_engagement_id = int(engagement) if (engagement and str(engagement).isdigit()) else conf.get("engagement_id")
     target_test_title = test_title or conf.get("test_title")
 
     click.echo(f"[*] Processando envio de '{findings_file}' para o DefectDojo...")
     if target_test_id:
         click.echo(f"• Modo: Reimport (Atualização do Test ID: {target_test_id})")
     else:
-        click.echo(f"• Modo: Importação Inicial")
-        click.echo(f"• Produto: {target_product}")
-        click.echo(f"• Engagement: {target_engagement}")
+        click.echo(f"• Modo: Importação Inicial (Criação de Novo Teste)")
+        if target_engagement_id:
+            click.echo(f"• Engagement ID: {target_engagement_id}")
+        else:
+            click.echo(f"• Produto: {target_product}")
+            click.echo(f"• Engagement: {target_engagement}")
         if target_test_title:
             click.echo(f"• Título do Teste: {target_test_title}")
 
     ok, res, mode = upload_scan_to_defectdojo(
         findings_file,
-        product_name=product,
-        engagement_name=engagement,
-        test_id=test_id,
-        test_title=test_title,
+        product_name=target_product,
+        engagement_name=target_engagement if not target_engagement_id else None,
+        engagement_id=target_engagement_id,
+        test_id=target_test_id,
+        test_title=target_test_title,
         config=conf
     )
     if ok:
-        res_test = res.get("test") if isinstance(res, dict) else "OK"
-        click.echo(click.style(f"[✓] Envio concluído com sucesso no DefectDojo ({mode} | Test ID: {res_test})!", fg="green", bold=True))
+        res_test = res.get("test_id") or res.get("test") if isinstance(res, dict) else "OK"
+        t_url = res.get("test_url", "") if isinstance(res, dict) else ""
+        click.echo(click.style(f"[✓] Envio concluído com sucesso no DefectDojo!", fg="green", bold=True))
+        click.echo(click.style(f"    • Modo: {mode}", fg="cyan"))
+        click.echo(click.style(f"    • Test ID: {res_test}", fg="green", bold=True))
+        if t_url:
+            click.echo(click.style(f"    • Link direto: {t_url}", fg="bright_blue", bold=True))
     else:
         click.echo(click.style(f"[-] Falha no envio para o DefectDojo ({mode}): {res}", fg="red", bold=True))
         sys.exit(1)
