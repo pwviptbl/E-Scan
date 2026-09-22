@@ -127,20 +127,31 @@ class SqlInjectionModule(IScanModule):
                 request_to_send = rebuild_attack_request(request_node, injection_point, payload)
                 session.send(request_to_send, timeout=session.timeout, allow_redirects=False)
                 elapsed = time.time() - start
-                if elapsed >= 3:
-                    return [
-                        Vulnerability(
-                            name="SQL Injection (Time-Based)",
-                            severity="High",
-                            description=(
-                                "SQL Injection detectada por atraso na resposta via PostgreSQL pg_sleep. "
-                                f"Payload '{payload}' em '{injection_point['parameter_name']}'."
-                            ),
-                            evidence=f"Payload: {payload} | Delay: {elapsed:.2f}s",
-                            request_node_id=request_node['id'],
-                            injection_point_id=injection_point['id']
-                        )
-                    ]
+                if elapsed >= 3.0:
+                    # Confirmação contra falso positivo: valida se a requisição normal é mais rápida
+                    try:
+                        t_base_start = time.time()
+                        base_req = rebuild_attack_request(request_node, injection_point, original_value)
+                        session.send(base_req, timeout=session.timeout, allow_redirects=False)
+                        base_elapsed = time.time() - t_base_start
+                    except Exception:
+                        base_elapsed = 0.0
+
+                    # Só confirma se o atraso for genuinamente superior ao baseline da aplicação
+                    if elapsed >= (base_elapsed + 2.5) or base_elapsed < 1.0:
+                        return [
+                            Vulnerability(
+                                name="SQL Injection (Time-Based)",
+                                severity="High",
+                                description=(
+                                    "SQL Injection detectada por atraso na resposta via PostgreSQL pg_sleep. "
+                                    f"Payload '{payload}' em '{injection_point['parameter_name']}'."
+                                ),
+                                evidence=f"Payload: {payload} | Delay: {elapsed:.2f}s (Baseline: {base_elapsed:.2f}s)",
+                                request_node_id=request_node['id'],
+                                injection_point_id=injection_point['id']
+                            )
+                        ]
             except requests.exceptions.RequestException:
                 continue
             except Exception:
