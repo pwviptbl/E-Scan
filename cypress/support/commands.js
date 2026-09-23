@@ -156,7 +156,20 @@ Cypress.Commands.add("fuzzGenericForm", () => {
         }
       });
 
-      // 5. Clica no primeiro botão de submissão encontrado
+      // 5. Interage com modais de busca (DBAncora / func_*.php)
+      // No E-cidade, campos chave (CGM, Ruas, etc.) possuem links âncora que abrem janelas de pesquisa
+      const $ancoras = $root.find("a.DBAncora:visible, a[onclick*='js_pesquisa']:visible");
+      if ($ancoras.length > 0) {
+        $ancoras.each((idx, a) => {
+          if (idx < 2) { // Limita a 2 modais por tela para não onerar o tempo de execução
+            try {
+              a.click();
+            } catch (e) {}
+          }
+        });
+      }
+
+      // 6. Clica no primeiro botão de submissão encontrado
       const submitBtn = $root.find(
         "input[type='submit'], input[name='incluir'], input[name='alterar'], input[value*='Incluir'], input[value*='Salvar'], input[value*='Pesquisar'], input[value*='Consultar']"
       ).filter(":visible").first();
@@ -167,17 +180,31 @@ Cypress.Commands.add("fuzzGenericForm", () => {
     }
 
     const $mainDoc = Cypress.$(doc);
+
+    // Varre iframes principais e janelas modais de pesquisa (DBView / Window)
     $mainDoc.find("iframe").each((_, frame) => {
       try {
         const fBody = frame.contentDocument?.body;
         if (fBody) {
           const $fBody = Cypress.$(fBody);
           processFormInElement($fBody);
-          // Sub-iframes internos (ex: iframe#corpo dentro da janela)
+
+          // Sub-iframes internos (janelas de lookup db_iframe_* / func_*.php)
           $fBody.find("iframe").each((__, subFrame) => {
             try {
-              const sfBody = subFrame.contentDocument?.body;
-              if (sfBody) processFormInElement(Cypress.$(sfBody));
+              const sfDoc = subFrame.contentDocument;
+              const sfBody = sfDoc?.body;
+              if (sfBody) {
+                const $sfBody = Cypress.$(sfBody);
+                // Se for um modal de pesquisa func_*.php, dispara busca interna para registrar tráfego POST/GET
+                const $searchBtn = $sfBody.find("input[name='pesquisar'], input[value*='Pesquisar'], input#pesquisar2").filter(":visible").first();
+                if ($searchBtn.length > 0) {
+                  $sfBody.find("input[type='text']:visible").first().val("1");
+                  $searchBtn.click();
+                } else {
+                  processFormInElement($sfBody);
+                }
+              }
             } catch (e) {}
           });
         }

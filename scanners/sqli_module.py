@@ -59,18 +59,16 @@ class SqlInjectionModule(IScanModule):
         num_val = original_value if is_numeric else "1"
 
         # Error-based payloads
-        # Inclui testes com aspas e testes numéricos livres de aspas (especiais para PostgreSQL / E-cidade)
+        # Foco estrito em erro de sintaxe, tipos inválidos e divisão por zero (sem varredura massiva de tabela)
         error_payloads = [
             "'",
             '"',
             "'-- ",
             "\")",
-            "' OR '1'='1'-- ",
             f"{num_val}/0",
             f"{num_val}); SELECT 1/0; -- ",
             f"{num_val} AND 1=CAST(chr(118)||chr(117)||chr(108)||chr(110) AS integer)",
-            f"{num_val}) OR 1=1-- ",
-            f"{num_val} OR 1=1-- ",
+            f"{num_val}); SELECT 1; -- ",
         ]
         if is_numeric:
             error_payloads = [f"{original_value}'"] + error_payloads
@@ -163,7 +161,6 @@ class SqlInjectionModule(IScanModule):
         if is_numeric:
             return [
                 (f"{original_value} AND 1=1", f"{original_value} AND 1=2"),
-                (f"{original_value} OR 1=1", f"{original_value} AND 1=2"),
             ]
         return [
             ("' AND '1'='1'-- ", "' AND '1'='2'-- "),
