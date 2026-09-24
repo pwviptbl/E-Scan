@@ -171,7 +171,7 @@ describe("E-cidade DAST - Crawler Automático de Menus e Rotinas", () => {
         });
 
         // 5. Aguarda carregamento efetivo dos inputs no iframe corpo
-        cy.window().then((win) => {
+        cy.window({ timeout: 20000 }).then({ timeout: 20000 }, (win) => {
           return new Cypress.Promise((resolve) => {
             let attempts = 0;
             const check = () => {
@@ -191,8 +191,8 @@ describe("E-cidade DAST - Crawler Automático de Menus e Rotinas", () => {
                   }
                 } catch (e) {}
               }
-              if (attempts < 25) {
-                setTimeout(check, 400);
+              if (attempts < 20) {
+                setTimeout(check, 300);
               } else {
                 resolve();
               }
@@ -200,13 +200,13 @@ describe("E-cidade DAST - Crawler Automático de Menus e Rotinas", () => {
             check();
           });
         });
-        cy.wait(1200);
+        cy.wait(800);
 
         // 6. Fuzzing inteligente dos formulários
         cy.fuzzGenericForm();
 
         // Aguarda envio e resposta do servidor antes de fechar a janela
-        cy.wait(4000);
+        cy.wait(2500);
 
         // 7. Fecha todas as janelas após a execução
         cy.closeAllDesktopWindows();
