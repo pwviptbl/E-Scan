@@ -21,6 +21,7 @@ class DastScanner:
         self.param_location = param_location.lower()
         self.modules = {}
         self.routines_map = {}
+        self.ignore_params = self._load_ignore_params()
 
         if "sqli" in self.enabled_types:
             self.modules["SQLi"] = SqlInjectionModule()
@@ -32,6 +33,25 @@ class DastScanner:
             self.modules["IDOR"] = IdorModule()
 
         self.findings = []
+
+    def _load_ignore_params(self):
+        """Carrega lista de substrings de parâmetros a ignorar no scan ativo."""
+        path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "ignore_params.txt")
+        patterns = []
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        patterns.append(line.lower())
+        return patterns
+
+    def _is_ignored_param(self, param_name: str) -> bool:
+        """Retorna True se o parâmetro deve ser ignorado no scan."""
+        name_lower = param_name.lower()
+        return any(pat in name_lower for pat in self.ignore_params)
+
+
 
     def resolve_routine(self, route):
         """Identifica com precisão a rotina, sub-rotina ou tela do E-cidade associada à requisição."""
@@ -195,6 +215,9 @@ class DastScanner:
         # Testa parâmetros de Query
         if self.param_location in ("all", "body-query", "query"):
             for param_name, values in query_params.items():
+                if self._is_ignored_param(param_name):
+                    print(f"   -> [Skip] Parâmetro ignorado (ignore_params): '{param_name}'")
+                    continue
                 orig_val = values[0] if values else ""
                 inj_point = {
                     "id": 1,
@@ -208,6 +231,9 @@ class DastScanner:
         # Testa parâmetros de Form Body
         if self.param_location in ("all", "body", "body-query"):
             for param_name, values in body_params.items():
+                if self._is_ignored_param(param_name):
+                    print(f"   -> [Skip] Parâmetro ignorado (ignore_params): '{param_name}'")
+                    continue
                 orig_val = values[0] if values else ""
                 inj_point = {
                     "id": 1,
@@ -217,6 +243,8 @@ class DastScanner:
                     "original_value": orig_val
                 }
                 self._run_modules_on_point(request_node, inj_point, routine=routine, action_file=action_file)
+
+
 
     def _run_modules_on_point(self, request_node, inj_point, routine="Geral", action_file=""):
         print(f"   -> [Ativo] Testando {inj_point['location']}: '{inj_point['param_name']}'...")
@@ -350,7 +378,7 @@ class DastScanner:
         }
 
         mitigation_map = {
-            89: "Utilizar Prepared Statements (PDO / parameterized queries). Sanitizar e tipar estritamente todos os parâmetros de entrada.",
+            89: "Valide o tipo da entrada e utilize o db_query_params.",
             79: "Aplicar encoding contextual de saída (htmlspecialchars com ENT_QUOTES | ENT_HTML5) e implementar Content-Security-Policy (CSP).",
             22: "Validar nomes de arquivos com whitelist rigorosa e utilizar basename() para impedir path traversal.",
             639: "Validar se o usuário autenticado possui autorização e controle de acesso explícito sobre o identificador do registro.",

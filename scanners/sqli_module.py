@@ -135,8 +135,11 @@ class SqlInjectionModule(IScanModule):
                     except Exception:
                         base_elapsed = 0.0
 
-                    # Só confirma se o atraso for genuinamente superior ao baseline da aplicação
-                    if elapsed >= (base_elapsed + 2.5) or base_elapsed < 1.0:
+                    # Threshold dinâmico: absorve jitter de VPN/rede sem perder SQLi reais
+                    # Exige atraso de pelo menos 50% acima do baseline + 0.5s de margem
+                    # OU baseline + 2.5s (proteção mínima absoluta)
+                    dynamic_threshold = max(base_elapsed * 1.5 + 0.5, base_elapsed + 2.5)
+                    if elapsed >= dynamic_threshold:
                         return [
                             Vulnerability(
                                 name="SQL Injection (Time-Based)",
@@ -145,7 +148,7 @@ class SqlInjectionModule(IScanModule):
                                     "SQL Injection detectada por atraso na resposta via PostgreSQL pg_sleep. "
                                     f"Payload '{payload}' em '{injection_point['parameter_name']}'."
                                 ),
-                                evidence=f"Payload: {payload} | Delay: {elapsed:.2f}s (Baseline: {base_elapsed:.2f}s)",
+                                evidence=f"Payload: {payload} | Delay: {elapsed:.2f}s (Baseline: {base_elapsed:.2f}s | Threshold: {dynamic_threshold:.2f}s)",
                                 request_node_id=request_node['id'],
                                 injection_point_id=injection_point['id']
                             )
@@ -154,6 +157,7 @@ class SqlInjectionModule(IScanModule):
                 continue
             except Exception:
                 return []
+
 
         return []
 

@@ -121,11 +121,17 @@ Cypress.Commands.add("fuzzGenericForm", () => {
   cy.document().then((doc) => {
     // Procura em todas as janelas e iframes abertos
     function processFormInElement($root) {
-      // 1. Trata CGM se existir no formulário
-      const $cgm = $root.find("input[name='z01_numcgm'], input#z01_numcgm").filter(":visible");
-      if ($cgm.length > 0 && !$cgm.prop("readonly") && !$cgm.prop("disabled") && !$cgm.val()) {
-        $cgm.val("6");
-        $cgm.trigger("change");
+      // 1. Trata campos CGM genericos (*cgm / *numcgm)
+      const $cgm = $root.find("input[name*='cgm'], input[id*='cgm']").filter(":visible");
+      if ($cgm.length > 0) {
+        $cgm.each((_, el) => {
+          const $el = Cypress.$(el);
+          const name = ($el.attr("name") || "").toLowerCase();
+          if (!$el.prop("readonly") && !$el.prop("disabled") && !$el.val() && !name.includes("nome") && !name.includes("descr")) {
+            $el.val("6");
+            $el.trigger("change");
+          }
+        });
       }
 
       // 2. Preenche senhas se houver
@@ -137,7 +143,26 @@ Cypress.Commands.add("fuzzGenericForm", () => {
         }
       });
 
-      // 3. Preenche emails se houver
+      // 3. Preenche datas legadas (dia, mes, ano sao hidden no db_inputdata) e campos de data visiveis
+      $root.find("input[name$='_dia']").each((_, el) => {
+        el.value = "01";
+      });
+      $root.find("input[name$='_mes']").each((_, el) => {
+        el.value = "01";
+      });
+      $root.find("input[name$='_ano']").each((_, el) => {
+        el.value = "2026";
+      });
+      $root.find("input[name*='dt'], input[name*='data'], input[onblur*='js_validaDbData']").filter(":visible").each((_, el) => {
+        const $el = Cypress.$(el);
+        if (!$el.prop("readonly") && !$el.prop("disabled") && !$el.val()) {
+          $el.val("01/01/2026");
+          $el.trigger("input");
+          $el.trigger("change");
+        }
+      });
+
+      // 4. Preenche emails se houver
       $root.find("input[type='email'], input[name*='email']:visible").each((_, el) => {
         const $em = Cypress.$(el);
         if (!$em.prop("readonly") && !$em.prop("disabled")) {
@@ -146,70 +171,106 @@ Cypress.Commands.add("fuzzGenericForm", () => {
         }
       });
 
-      // 4. Preenche outros campos de texto vazios
+      // 5. Preenche outros campos de texto vazios
       $root.find("input[type='text']:visible, textarea:visible").each((_, el) => {
         const $el = Cypress.$(el);
         const name = ($el.attr("name") || "").toLowerCase();
-        if (!$el.prop("readonly") && !$el.prop("disabled") && !$el.val() && !name.includes("cgm")) {
+        if (!$el.prop("readonly") && !$el.prop("disabled") && !$el.val() && !name.includes("cgm") && !name.includes("dt") && !name.includes("data") && !name.endsWith("_dia") && !name.endsWith("_mes") && !name.endsWith("_ano")) {
           $el.val(name.includes("login") ? `dast_${Date.now().toString().slice(-5)}` : "1");
           $el.trigger("input");
         }
       });
 
-      // 5. Interage com modais de busca (DBAncora / func_*.php)
-      // No E-cidade, campos chave (CGM, Ruas, etc.) possuem links âncora que abrem janelas de pesquisa
-      const $ancoras = $root.find("a.DBAncora:visible, a[onclick*='js_pesquisa']:visible");
-      if ($ancoras.length > 0) {
-        $ancoras.each((idx, a) => {
-          if (idx < 2) { // Limita a 2 modais por tela para não onerar o tempo de execução
-            try {
-              a.click();
-            } catch (e) {}
+      // 6. Clica no botao de acao principal (prioriza inclusao / persistencia)
+      const primarySubmitBtn = $root.find(
+        "input[name='incluir'], input[value*='Incluir'], input[name='salvar'], input[value*='Salvar'], input[type='submit'][value*='Incluir']"
+      ).first();
+
+      const secondarySubmitBtn = $root.find(
+        "input[name='alterar'], input[value*='Alterar'], input[value*='Gravar'], input[type='submit']"
+      ).first();
+
+      const searchBtn = $root.find(
+        "input[name='pesquisar'], input[value*='Pesquisar'], input#pesquisar2, input[value*='Consultar']"
+      ).first();
+
+      const btnToClick = primarySubmitBtn.length > 0 ? primarySubmitBtn : (secondarySubmitBtn.length > 0 ? secondarySubmitBtn : searchBtn);
+
+      if (btnToClick && btnToClick.length > 0) {
+        const btnName = btnToClick.attr("name") || "incluir";
+        const btnVal = btnToClick.val() || "Incluir";
+        cy.task("log", `[DAST Debug] -> Submetendo acao: name='${btnName}' val='${btnVal}'`);
+        const formEl = btnToClick.closest("form")[0];
+        if (formEl) {
+          formEl.onsubmit = null;
+
+          // Se o botao existir como submit, converte para hidden para ser serializado no submit()
+          const existingBtn = formEl.elements[btnName];
+          if (existingBtn) {
+            existingBtn.type = "hidden";
+            existingBtn.value = btnVal;
+          } else {
+            const hiddenInput = formEl.ownerDocument.createElement("input");
+            hiddenInput.type = "hidden";
+            hiddenInput.name = btnName;
+            hiddenInput.value = btnVal;
+            formEl.appendChild(hiddenInput);
           }
-        });
-      }
 
-      // 6. Clica no primeiro botão de submissão encontrado
-      const submitBtn = $root.find(
-        "input[type='submit'], input[name='incluir'], input[name='alterar'], input[value*='Incluir'], input[value*='Salvar'], input[value*='Pesquisar'], input[value*='Consultar']"
-      ).filter(":visible").first();
-
-      if (submitBtn.length > 0 && !submitBtn.prop("disabled")) {
-        submitBtn.click();
+          try {
+            HTMLFormElement.prototype.submit.call(formEl);
+          } catch (e) {
+            btnToClick[0].click();
+          }
+        } else {
+          try {
+            btnToClick[0].click();
+          } catch (e) {
+            btnToClick.trigger("click");
+          }
+        }
       }
     }
 
-    const $mainDoc = Cypress.$(doc);
+    function scanAndProcessIframes($container, depth = 0) {
+      if (depth > 4) return;
+      const $frames = $container.find("iframe");
+      cy.task("log", `[DAST Debug] Depth ${depth}: encontrados ${$frames.length} iframes`);
 
-    // Varre iframes principais e janelas modais de pesquisa (DBView / Window)
-    $mainDoc.find("iframe").each((_, frame) => {
-      try {
-        const fBody = frame.contentDocument?.body;
-        if (fBody) {
-          const $fBody = Cypress.$(fBody);
-          processFormInElement($fBody);
+      $frames.each((i, frame) => {
+        try {
+          const fDoc = frame.contentDocument;
+          const fBody = fDoc?.body;
+          const frameSrc = (frame.src || frame.getAttribute("src") || "").toLowerCase();
+          const frameId = frame.id || frame.name || `frame_${i}`;
+          cy.task("log", `[DAST Debug] -> Frame [${frameId}]: src='${frameSrc}' body=${Boolean(fBody)}`);
 
-          // Sub-iframes internos (janelas de lookup db_iframe_* / func_*.php)
-          $fBody.find("iframe").each((__, subFrame) => {
-            try {
-              const sfDoc = subFrame.contentDocument;
-              const sfBody = sfDoc?.body;
-              if (sfBody) {
-                const $sfBody = Cypress.$(sfBody);
-                // Se for um modal de pesquisa func_*.php, dispara busca interna para registrar tráfego POST/GET
-                const $searchBtn = $sfBody.find("input[name='pesquisar'], input[value*='Pesquisar'], input#pesquisar2").filter(":visible").first();
-                if ($searchBtn.length > 0) {
-                  $sfBody.find("input[type='text']:visible").first().val("1");
-                  $searchBtn.click();
-                } else {
-                  processFormInElement($sfBody);
-                }
+          if (fBody) {
+            const $fBody = Cypress.$(fBody);
+
+            if (frameSrc.includes("func_") || frameId.includes("db_iframe_")) {
+              const $modalSearch = $fBody.find("input[name='pesquisar'], input[value*='Pesquisar'], input#pesquisar2").filter(":visible").first();
+              cy.task("log", `[DAST Debug]    -> Modal de lookup detectado. Pesquisar: ${$modalSearch.length}`);
+              if ($modalSearch.length > 0) {
+                $fBody.find("input[type='text']:visible").first().val("1");
+                $modalSearch.click();
               }
-            } catch (e) {}
-          });
+            } else {
+              const inputsCount = $fBody.find("input, select, textarea").length;
+              cy.task("log", `[DAST Debug]    -> Conteudo de rotina detectado. Inputs: ${inputsCount}`);
+              processFormInElement($fBody);
+            }
+
+            scanAndProcessIframes($fBody, depth + 1);
+          }
+        } catch (e) {
+          cy.task("log", `[DAST Debug] Frame erro de acesso: ${e.message}`);
         }
-      } catch (e) {}
-    });
+      });
+    }
+
+    const $mainDoc = Cypress.$(doc);
+    scanAndProcessIframes($mainDoc, 0);
   });
 
   cy.wait(2000);

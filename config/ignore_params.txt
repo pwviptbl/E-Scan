@@ -1,0 +1,29 @@
+# ============================================================
+# ignore_params.txt — Parâmetros ignorados no scan de SQLi
+# ============================================================
+# Um padrão por linha. Case-insensitive. Suporta substring.
+# Parâmetros cujo nome contenha qualquer um desses termos
+# serão pulados pelo scanner ativo.
+#
+# Motivos comuns para ignorar:
+#   - senha / password   -> PHP usa md5() antes de inserir no SQL
+#   - confirma*          -> campo de confirmação de senha, mesmo hash
+#   - _dia / _mes / _ano -> campos cosméticos de data (PHP lê direto)
+#   - token / csrf       -> campos anti-CSRF, não chegam ao SQL
+#   - submit / action    -> botões e ações de formulário
+# ============================================================
+
+senha
+password
+passwd
+confirma
+confirmacao
+_dia
+_mes
+_ano
+token
+csrf
+_token
+submit
+action
+pesquisar

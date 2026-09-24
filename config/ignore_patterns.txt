@@ -13,6 +13,14 @@ skins/img.php
 extension/desktop/menu/getMenuArquivo
 getMenuArquivo
 
+# Rotas estruturais de menu e desktop (evita retestar infraestrutura a cada rotina)
+extension/desktop/menu/getareas
+extension/desktop/menu/getmodulos
+extension/desktop/menu/getitensmenu
+extension/desktop/desktop/getbases
+v4/api/configuracao/
+v4/login
+
 # Arquivos/Recursos estáticos ou fontes
 .png
 .jpg
