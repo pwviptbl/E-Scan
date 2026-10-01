@@ -126,7 +126,7 @@ class SqlInjectionModule(IScanModule):
                 session.send(request_to_send, timeout=session.timeout, allow_redirects=False)
                 elapsed = time.time() - start
                 if elapsed >= 3.0:
-                    # Confirmação contra falso positivo: valida se a requisição normal é mais rápida
+                    # 1. Mede a requisição baseline normal
                     try:
                         t_base_start = time.time()
                         base_req = rebuild_attack_request(request_node, injection_point, original_value)
@@ -135,20 +135,37 @@ class SqlInjectionModule(IScanModule):
                     except Exception:
                         base_elapsed = 0.0
 
-                    # Threshold dinâmico: absorve jitter de VPN/rede sem perder SQLi reais
-                    # Exige atraso de pelo menos 50% acima do baseline + 0.5s de margem
-                    # OU baseline + 2.5s (proteção mínima absoluta)
                     dynamic_threshold = max(base_elapsed * 1.5 + 0.5, base_elapsed + 2.5)
-                    if elapsed >= dynamic_threshold:
+                    if elapsed < dynamic_threshold:
+                        continue
+
+                    # 2. CONTRAPROVA COM DOUBLE-SLEEP:
+                    # Dispara segundo teste escalonando para pg_sleep(5).
+                    # Se for SQLi real no PostgreSQL, o tempo deve aumentar proporcionalmente (~5s + baseline).
+                    # Se for mero gargalo do PHP ou oscilação de rede/VPN, o segundo teste NÃO escalará.
+                    confirm_payload = payload.replace("pg_sleep(3)", "pg_sleep(5)").replace("SLEEP(3)", "SLEEP(5)")
+                    try:
+                        t_conf_start = time.time()
+                        confirm_req = rebuild_attack_request(request_node, injection_point, confirm_payload)
+                        session.send(confirm_req, timeout=12, allow_redirects=False)
+                        confirm_elapsed = time.time() - t_conf_start
+                    except Exception:
+                        continue
+
+                    # Valida se o sleep(5) demorou proporcionalmente mais que o sleep(3)
+                    if confirm_elapsed >= (base_elapsed + 4.2) and (confirm_elapsed >= elapsed + 1.2):
                         return [
                             Vulnerability(
                                 name="SQL Injection (Time-Based)",
                                 severity="High",
                                 description=(
-                                    "SQL Injection detectada por atraso na resposta via PostgreSQL pg_sleep. "
+                                    "SQL Injection confirmada via PostgreSQL pg_sleep com validação diferencial (Double-Sleep). "
                                     f"Payload '{payload}' em '{injection_point['parameter_name']}'."
                                 ),
-                                evidence=f"Payload: {payload} | Delay: {elapsed:.2f}s (Baseline: {base_elapsed:.2f}s | Threshold: {dynamic_threshold:.2f}s)",
+                                evidence=(
+                                    f"Payload: {payload} | Sleep(3): {elapsed:.2f}s | "
+                                    f"Contraprova Sleep(5): {confirm_elapsed:.2f}s | Baseline: {base_elapsed:.2f}s"
+                                ),
                                 request_node_id=request_node['id'],
                                 injection_point_id=injection_point['id']
                             )
@@ -157,6 +174,7 @@ class SqlInjectionModule(IScanModule):
                 continue
             except Exception:
                 return []
+
 
 
         return []

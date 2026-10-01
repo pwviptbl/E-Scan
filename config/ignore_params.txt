@@ -27,3 +27,13 @@ _token
 submit
 action
 pesquisar
+incluir
+alterar
+excluir
+salvar
+gravar
+cancelar
+emitir
+iopcao
+opcao
+btn_
