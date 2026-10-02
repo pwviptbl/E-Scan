@@ -46,7 +46,7 @@ class SqlInjectionModule(IScanModule):
         injection_point: InjectionPoint,
         oast_client: OASTClient
     ) -> List[Vulnerability]:
-        relevant_locations = {'QUERY', 'BODY_FORM', 'BODY_FORM_JSON', 'BODY_JSON', 'HEADER', 'COOKIE'}
+        relevant_locations = {'QUERY', 'QUERY_JSON', 'BODY_FORM', 'BODY_FORM_JSON', 'BODY_JSON', 'HEADER', 'COOKIE'}
         if injection_point['location'] not in relevant_locations:
             return []
 

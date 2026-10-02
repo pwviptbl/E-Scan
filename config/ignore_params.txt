@@ -37,3 +37,6 @@ emitir
 iopcao
 opcao
 btn_
+exec
+sexec
+funcao_js

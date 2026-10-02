@@ -51,8 +51,38 @@ class DastScanner:
         name_lower = param_name.lower()
         return any(pat in name_lower for pat in self.ignore_params)
 
+    def _is_json_string(self, val):
+        """Verifica se uma string representa um JSON válido (objeto ou lista)."""
+        if not val or not isinstance(val, str):
+            return None
+        s = val.strip()
+        if (s.startswith("{") and s.endswith("}")) or (s.startswith("[") and s.endswith("]")):
+            try:
+                parsed = json.loads(s)
+                if isinstance(parsed, (dict, list)):
+                    return parsed
+            except Exception:
+                pass
+        return None
 
-
+    def _extract_json_leaves(self, data, prefix=""):
+        """Extrai recursivamente caminhos folha de um JSON (dot notation) e valores originais."""
+        leaves = []
+        if isinstance(data, dict):
+            for k, v in data.items():
+                current = f"{prefix}.{k}" if prefix else str(k)
+                if isinstance(v, (dict, list)):
+                    leaves.extend(self._extract_json_leaves(v, current))
+                else:
+                    leaves.append((current, v, str(k)))
+        elif isinstance(data, list):
+            for idx, item in enumerate(data):
+                current = f"{prefix}.{idx}" if prefix else str(idx)
+                if isinstance(item, (dict, list)):
+                    leaves.extend(self._extract_json_leaves(item, current))
+                else:
+                    leaves.append((current, item, str(idx)))
+        return leaves
     def resolve_routine(self, route):
         """Identifica com precisão a rotina, sub-rotina ou tela do E-cidade associada à requisição."""
         # 1. Metadado explícito presente na rota
@@ -215,34 +245,92 @@ class DastScanner:
         # Testa parâmetros de Query
         if self.param_location in ("all", "body-query", "query"):
             for param_name, values in query_params.items():
-                if self._is_ignored_param(param_name):
-                    print(f"   -> [Skip] Parâmetro ignorado (ignore_params): '{param_name}'")
-                    continue
                 orig_val = values[0] if values else ""
-                inj_point = {
-                    "id": 1,
-                    "location": "QUERY",
-                    "param_name": param_name,
-                    "parameter_name": param_name,
-                    "original_value": orig_val
-                }
-                self._run_modules_on_point(request_node, inj_point, routine=routine, action_file=action_file)
+                parsed_json = self._is_json_string(orig_val)
+                if parsed_json is not None:
+                    # É um container JSON na query string (ex: ?json={...})
+                    leaves = self._extract_json_leaves(parsed_json)
+                    for json_path, leaf_val, key_name in leaves:
+                        if self._is_ignored_param(key_name):
+                            print(f"   -> [Skip] Chave JSON ignorada (ignore_params): '{param_name} -> {json_path}'")
+                            continue
+                        inj_point = {
+                            "id": 1,
+                            "location": "QUERY_JSON",
+                            "param_name": f"{param_name} -> {json_path}",
+                            "parameter_name": f"{param_name} -> {json_path}",
+                            "container_parameter": param_name,
+                            "json_path": json_path,
+                            "original_value": str(leaf_val) if leaf_val is not None else ""
+                        }
+                        self._run_modules_on_point(request_node, inj_point, routine=routine, action_file=action_file)
+                else:
+                    if self._is_ignored_param(param_name):
+                        print(f"   -> [Skip] Parâmetro ignorado (ignore_params): '{param_name}'")
+                        continue
+                    inj_point = {
+                        "id": 1,
+                        "location": "QUERY",
+                        "param_name": param_name,
+                        "parameter_name": param_name,
+                        "original_value": orig_val
+                    }
+                    self._run_modules_on_point(request_node, inj_point, routine=routine, action_file=action_file)
 
         # Testa parâmetros de Form Body
         if self.param_location in ("all", "body", "body-query"):
             for param_name, values in body_params.items():
-                if self._is_ignored_param(param_name):
-                    print(f"   -> [Skip] Parâmetro ignorado (ignore_params): '{param_name}'")
-                    continue
                 orig_val = values[0] if values else ""
-                inj_point = {
-                    "id": 1,
-                    "location": "BODY_FORM",
-                    "param_name": param_name,
-                    "parameter_name": param_name,
-                    "original_value": orig_val
-                }
-                self._run_modules_on_point(request_node, inj_point, routine=routine, action_file=action_file)
+                parsed_json = self._is_json_string(orig_val)
+                if parsed_json is not None:
+                    # É um container JSON no formulário (ex: json={...})
+                    leaves = self._extract_json_leaves(parsed_json)
+                    for json_path, leaf_val, key_name in leaves:
+                        if self._is_ignored_param(key_name):
+                            print(f"   -> [Skip] Chave JSON ignorada (ignore_params): '{param_name} -> {json_path}'")
+                            continue
+                        inj_point = {
+                            "id": 1,
+                            "location": "BODY_FORM_JSON",
+                            "param_name": f"{param_name} -> {json_path}",
+                            "parameter_name": f"{param_name} -> {json_path}",
+                            "container_parameter": param_name,
+                            "json_path": json_path,
+                            "original_value": str(leaf_val) if leaf_val is not None else ""
+                        }
+                        self._run_modules_on_point(request_node, inj_point, routine=routine, action_file=action_file)
+                else:
+                    if self._is_ignored_param(param_name):
+                        print(f"   -> [Skip] Parâmetro ignorado (ignore_params): '{param_name}'")
+                        continue
+                    inj_point = {
+                        "id": 1,
+                        "location": "BODY_FORM",
+                        "param_name": param_name,
+                        "parameter_name": param_name,
+                        "original_value": orig_val
+                    }
+                    self._run_modules_on_point(request_node, inj_point, routine=routine, action_file=action_file)
+
+            # Caso o body seja um JSON bruto (application/json)
+            if not body_params and body:
+                raw_body_str = body.decode('utf-8', errors='ignore') if isinstance(body, bytes) else str(body)
+                parsed_raw_json = self._is_json_string(raw_body_str)
+                if parsed_raw_json is not None:
+                    leaves = self._extract_json_leaves(parsed_raw_json)
+                    for json_path, leaf_val, key_name in leaves:
+                        if self._is_ignored_param(key_name):
+                            print(f"   -> [Skip] Chave JSON ignorada (ignore_params): 'JSON -> {json_path}'")
+                            continue
+                        inj_point = {
+                            "id": 1,
+                            "location": "BODY_JSON",
+                            "param_name": f"JSON -> {json_path}",
+                            "parameter_name": f"JSON -> {json_path}",
+                            "json_path": json_path,
+                            "original_value": str(leaf_val) if leaf_val is not None else ""
+                        }
+                        self._run_modules_on_point(request_node, inj_point, routine=routine, action_file=action_file)
 
 
 

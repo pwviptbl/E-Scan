@@ -9,23 +9,41 @@ RequestNode = Dict[str, Any]
 InjectionPoint = Dict[str, Any]
 
 
-def _update_nested_dict(data: Dict[str, Any], path: str, value: Any) -> Dict[str, Any]:
+def _update_nested_data(data: Any, path: str, value: Any) -> Any:
     """
-    Updates a value in a nested dictionary based on a dot-separated path.
+    Atualiza valor em dicionário ou lista aninhada a partir de caminho separado por pontos.
     """
     keys = path.split('.')
-    current_level = data
-    for key in keys[:-1]:
-        current_level = current_level.setdefault(key, {})
-    current_level[keys[-1]] = value
+    current = data
+    for i, key in enumerate(keys[:-1]):
+        if isinstance(current, dict):
+            if key not in current:
+                next_key = keys[i + 1]
+                current[key] = [] if next_key.isdigit() else {}
+            current = current[key]
+        elif isinstance(current, list) and key.isdigit():
+            idx = int(key)
+            if idx < len(current):
+                current = current[idx]
+            else:
+                return data
+        else:
+            return data
+
+    last_key = keys[-1]
+    if isinstance(current, dict):
+        current[last_key] = value
+    elif isinstance(current, list) and last_key.isdigit():
+        idx = int(last_key)
+        if idx < len(current):
+            current[idx] = value
     return data
 
 
 def _update_nested_json_text(raw_json: str, path: str, value: Any) -> str:
     data = json.loads(raw_json)
-    if isinstance(data, dict):
-        data = _update_nested_dict(data, path, value)
-    return json.dumps(data, separators=(",", ":"))
+    data = _update_nested_data(data, path, value)
+    return json.dumps(data, separators=(",", ":"), ensure_ascii=False)
 
 
 def rebuild_attack_request(
@@ -68,6 +86,18 @@ def rebuild_attack_request(
                 if val == original_value:
                     query_params[param_name][i] = payload
                     break
+        new_query = urlencode(query_params, doseq=True)
+        url = urlunparse(parsed_url._replace(query=new_query))
+    elif location == 'QUERY_JSON':
+        container_param = injection_point.get('container_parameter')
+        json_path = injection_point.get('json_path') or param_name
+        if container_param in query_params:
+            for i, val in enumerate(query_params[container_param]):
+                try:
+                    query_params[container_param][i] = _update_nested_json_text(val, json_path, payload)
+                    break
+                except (json.JSONDecodeError, KeyError, TypeError):
+                    continue
         new_query = urlencode(query_params, doseq=True)
         url = urlunparse(parsed_url._replace(query=new_query))
     else:
@@ -114,15 +144,16 @@ def rebuild_attack_request(
         if 'Content-Type' not in headers:
             headers['Content-Type'] = 'application/x-www-form-urlencoded'
 
-
     if location == 'BODY_JSON':
         try:
-            json_body = json.loads(body)
-            json_data = _update_nested_dict(json_body, param_name, payload)
+            body_text = body.decode('utf-8', errors='ignore') if isinstance(body, bytes) else str(body or "")
+            json_body = json.loads(body_text)
+            json_path = injection_point.get('json_path') or param_name
+            json_data = _update_nested_data(json_body, json_path, payload)
             data = None  # Unset raw data when using the json parameter
         except (json.JSONDecodeError, KeyError):
             # If body is not valid JSON or path is wrong, fallback to raw replacement
-            data = body.replace(bytes(original_value, 'utf-8'), bytes(payload, 'utf-8'), 1)
+            data = body.replace(bytes(original_value, 'utf-8'), bytes(payload, 'utf-8'), 1) if isinstance(body, bytes) else str(body).replace(original_value, payload, 1)
             json_data = None
 
     # Reconstruct the request
