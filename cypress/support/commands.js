@@ -278,7 +278,7 @@ Cypress.Commands.add("fuzzGenericForm", () => {
           if (fBody) {
             const $fBody = Cypress.$(fBody);
 
-            if (frameSrc.includes("func_") || frameId.includes("db_iframe_")) {
+            if (frameSrc.includes("func_") || frameId.toLowerCase().includes("db_iframe")) {
               const $modalSearch = $fBody.find("input[name='pesquisar'], input[value*='Pesquisar'], input#pesquisar2").filter(":visible").first();
               cy.task("log", `[DAST Debug]    -> Modal de lookup detectado. Pesquisar: ${$modalSearch.length}`);
               if ($modalSearch.length > 0) {

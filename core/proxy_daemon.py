@@ -8,6 +8,7 @@ import time
 import json
 import asyncio
 import threading
+import re
 from urllib.parse import urlparse
 from mitmproxy import options, http
 from mitmproxy.tools.dump import DumpMaster
@@ -31,6 +32,36 @@ class DastCaptureAddon:
         # Ignora se não houver resposta
         if not res:
             return
+
+        # Neutraliza alertas e diálogos modais síncronos (alert, confirm, prompt, onbeforeunload)
+        # que travam iframes do Chrome headless antes do JS pós-carregamento rodar
+        try:
+            content_type = res.headers.get("content-type", "").lower()
+            if "text/html" in content_type and res.text:
+                dialog_neutralizer = (
+                    "<script>"
+                    "window.alert=function(){};"
+                    "window.confirm=function(){return true;};"
+                    "window.prompt=function(){return null;};"
+                    "window.onbeforeunload=null;"
+                    "try{if(window.top&&window.top!==window){window.top.alert=function(){};window.top.confirm=function(){return true;};}}catch(e){}"
+                    "try{if(window.parent&&window.parent!==window){window.parent.alert=function(){};window.parent.confirm=function(){return true;};}}catch(e){}"
+                    "</script>"
+                )
+                html_text = res.text
+                m = re.search(r'(<head[^>]*>)', html_text, re.IGNORECASE)
+                if m:
+                    idx = m.end()
+                    res.text = html_text[:idx] + dialog_neutralizer + html_text[idx:]
+                else:
+                    m = re.search(r'(<html[^>]*>)', html_text, re.IGNORECASE)
+                    if m:
+                        idx = m.end()
+                        res.text = html_text[:idx] + dialog_neutralizer + html_text[idx:]
+                    else:
+                        res.text = dialog_neutralizer + html_text
+        except Exception:
+            pass
 
         # Verifica escopo se definido
         req_host = req.pretty_host.lower()
