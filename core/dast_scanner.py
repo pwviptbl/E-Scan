@@ -109,6 +109,11 @@ class DastScanner:
         # 3. Consulta no mapa de rotinas extraído dinamicamente pelo crawler
         if self.routines_map and action:
             info = self.routines_map.get(action)
+            if not info and "?" in action:
+                info = self.routines_map.get(action.split("?")[0])
+            if not info:
+                base_act = action.split("?")[0]
+                info = self.routines_map.get(base_act)
             if isinstance(info, dict):
                 return info.get("breadcrumb", action), action
             elif isinstance(info, str):

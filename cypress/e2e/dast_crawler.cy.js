@@ -13,17 +13,23 @@ describe("E-cidade DAST - Crawler Automático de Menus e Rotinas", () => {
       .trim()
       .toLowerCase();
 
+  let activeModuloNome = moduloTarget || "";
+
   function extractTerminalLeaves(node, pathIds = [], pathNames = []) {
     let leaves = [];
     const currentPathIds = [...pathIds, node.id];
     const currentPathNames = [...pathNames, node.nome];
 
     if (node.action && (!node.filhos || Object.keys(node.filhos).length === 0)) {
+      const areaPrefix = areaTarget ? `${areaTarget} > ` : "";
+      const modPrefix = activeModuloNome ? `${activeModuloNome} > ` : "";
+      const fullBreadcrumb = `${areaPrefix}${modPrefix}${currentPathNames.join(" > ")}`;
+
       leaves.push({
         id: node.id,
         nome: node.nome,
         action: node.action,
-        breadcrumb: (moduloTarget ? `${moduloTarget} > ` : "") + currentPathNames.join(" > "),
+        breadcrumb: fullBreadcrumb,
         pathIds: currentPathIds,
         pathNames: currentPathNames
       });
@@ -58,9 +64,17 @@ describe("E-cidade DAST - Crawler Automático de Menus e Rotinas", () => {
       cy.get("#modulos span", { timeout: 15000 })
         .filter((i, el) => normalize(el.innerText).includes(normalize(moduloTarget)))
         .first()
-        .click({ force: true });
+        .then(($el) => {
+          activeModuloNome = $el.text().trim();
+          $el.click();
+        });
     } else {
-      cy.get("#modulos span:visible", { timeout: 15000 }).first().click({ force: true });
+      cy.get("#modulos span:visible", { timeout: 15000 })
+        .first()
+        .then(($el) => {
+          activeModuloNome = $el.text().trim();
+          $el.click();
+        });
     }
     cy.wait(1200);
   };
@@ -74,6 +88,13 @@ describe("E-cidade DAST - Crawler Automático de Menus e Rotinas", () => {
     cy.window().then((win) => {
       const $ = win.jQuery || win.$;
       const $catSpans = $("#modulos").parent().nextAll(".menu-list-container").find(".menu-list span");
+
+      if (!activeModuloNome) {
+        const $activeMod = $("#modulos span.active, #modulos span:visible").first();
+        if ($activeMod.length > 0) {
+          activeModuloNome = $activeMod.text().trim();
+        }
+      }
 
       let relevantNodes = [];
 
@@ -142,6 +163,17 @@ describe("E-cidade DAST - Crawler Automático de Menus e Rotinas", () => {
           action: l.action,
           id: l.id
         };
+
+        // Salva também pela base do arquivo PHP (sem query string)
+        const baseAction = l.action.split("?")[0];
+        if (!routinesMap[baseAction]) {
+          routinesMap[baseAction] = {
+            breadcrumb: l.breadcrumb,
+            nome: l.nome,
+            action: l.action,
+            id: l.id
+          };
+        }
       });
       cy.writeFile("logs/routines_map.json", routinesMap);
 

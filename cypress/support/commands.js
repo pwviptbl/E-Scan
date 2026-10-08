@@ -162,14 +162,7 @@ Cypress.Commands.add("fuzzGenericForm", () => {
         }
       });
 
-      // 4. Preenche emails se houver
-      $root.find("input[type='email'], input[name*='email']:visible").each((_, el) => {
-        const $em = Cypress.$(el);
-        if (!$em.prop("readonly") && !$em.prop("disabled")) {
-          $em.val("dast@dbseller.com.br");
-          $em.trigger("input");
-        }
-      });
+      // 4. Não preenche e-mails para evitar que funções legadas do PHP disparem mail() síncrono travando o crawler
 
       // 5. Preenche outros campos de texto vazios
       $root.find("input[type='text']:visible, textarea:visible").each((_, el) => {
@@ -203,6 +196,25 @@ Cypress.Commands.add("fuzzGenericForm", () => {
         const formEl = btnToClick.closest("form")[0];
         if (formEl) {
           formEl.onsubmit = null;
+
+          // Neutraliza alertas e confirmações na janela do formulário antes do submit
+          try {
+            const formWin = formEl.ownerDocument.defaultView;
+            if (formWin) {
+              formWin.alert = () => {};
+              formWin.confirm = () => true;
+              formWin.prompt = () => null;
+              formWin.onbeforeunload = null;
+              if (formWin.alertify) {
+                formWin.alertify.alert = (m, cb) => { if (cb) cb(); };
+                formWin.alertify.confirm = (m, cb) => { if (cb) cb(true); };
+              }
+              if (formWin.CurrentWindow) {
+                formWin.CurrentWindow.alert = (m, cb) => { if (cb) cb(); };
+                formWin.CurrentWindow.confirm = (m, cb) => { if (cb) cb(true); };
+              }
+            }
+          } catch (e) {}
 
           // Se o botao existir como submit, converte para hidden para ser serializado no submit()
           const existingBtn = formEl.elements[btnName];
@@ -240,6 +252,24 @@ Cypress.Commands.add("fuzzGenericForm", () => {
       $frames.each((i, frame) => {
         try {
           const fDoc = frame.contentDocument;
+          const fWin = frame.contentWindow;
+          if (fWin) {
+            try {
+              fWin.alert = () => {};
+              fWin.confirm = () => true;
+              fWin.prompt = () => null;
+              fWin.onbeforeunload = null;
+              if (fWin.alertify) {
+                fWin.alertify.alert = (m, cb) => { if (cb) cb(); };
+                fWin.alertify.confirm = (m, cb) => { if (cb) cb(true); };
+              }
+              if (fWin.CurrentWindow) {
+                fWin.CurrentWindow.alert = (m, cb) => { if (cb) cb(); };
+                fWin.CurrentWindow.confirm = (m, cb) => { if (cb) cb(true); };
+              }
+            } catch (e) {}
+          }
+
           const fBody = fDoc?.body;
           const frameSrc = (frame.src || frame.getAttribute("src") || "").toLowerCase();
           const frameId = frame.id || frame.name || `frame_${i}`;
@@ -278,27 +308,48 @@ Cypress.Commands.add("fuzzGenericForm", () => {
 });
 
 /**
- * Fecha todas as janelas do desktop E-cidade
+ * Fecha todas as janelas do desktop E-cidade e limpa alertas de todos os frames
  */
 Cypress.Commands.add("closeAllDesktopWindows", () => {
-  cy.window().then((win) => {
+  cy.window({ timeout: 10000 }).then((win) => {
+    function dismissAlerts(rootDoc) {
+      try {
+        const alertBtn = Cypress.$(rootDoc).find("#alertify-ok, .alertify-button-ok, .alertify-button, button:contains('OK'), a:contains('OK')").filter(":visible");
+        if (alertBtn.length > 0) {
+          alertBtn.first().click();
+        }
+      } catch (e) {}
+    }
+
+    dismissAlerts(win.document);
+
     try {
-      const alertBtn = Cypress.$(win.document).find("#alertify-ok, .alertify-button-ok, .alertify-button").filter(":visible");
-      if (alertBtn.length > 0) {
-        alertBtn.first().click();
-      }
+      const frames = win.document.querySelectorAll("iframe");
+      frames.forEach((f) => {
+        try {
+          if (f.contentDocument) dismissAlerts(f.contentDocument);
+          if (f.contentWindow) {
+            f.contentWindow.alert = () => {};
+            f.contentWindow.confirm = () => true;
+            f.contentWindow.prompt = () => null;
+            f.contentWindow.onbeforeunload = null;
+          }
+        } catch (e) {}
+      });
     } catch (e) {}
 
     try {
       Cypress.$(win.document).find("div[id$='_close'], .window_close, .ecidade_close").each((_, el) => {
-        el.click();
+        try { el.click(); } catch (e) {}
       });
     } catch (e) {}
 
     try {
       if (win.Windows && Array.isArray(win.Windows.windows)) {
         win.Windows.windows.forEach((w) => {
-          if (w && w.getId) win.Windows.close(w.getId());
+          if (w && w.getId) {
+            try { win.Windows.close(w.getId()); } catch (e) {}
+          }
         });
       }
     } catch (e) {}
