@@ -112,6 +112,14 @@ class DastScanner:
             if php_match:
                 action = php_match.group(1)
 
+        original_action = action
+        if hasattr(self, 'window_map') and not (self.routines_map and action and self.routines_map.get(action.split('?')[0])):
+            w_match = re.search(r'/w/(\d+)/', parsed.path)
+            if w_match:
+                wid = w_match.group(1)
+                if wid in self.window_map:
+                    action = self.window_map[wid]
+
         # 3. Consulta no mapa de rotinas diretamente pela action da URL
         if self.routines_map and action:
             info = self.routines_map.get(action)
@@ -121,9 +129,9 @@ class DastScanner:
                 base_act = action.split("?")[0]
                 info = self.routines_map.get(base_act)
             if isinstance(info, dict):
-                return info.get("breadcrumb", action), action
+                return info.get("breadcrumb", original_action), original_action
             elif isinstance(info, str):
-                return info, action
+                return info, original_action
 
         # 4. Rastreamento inteligente via Referer para RPCs, submits e chamadas Ajax
         referer = ""
@@ -197,6 +205,23 @@ class DastScanner:
                     self.routines_map = json.load(f)
             except Exception:
                 pass
+
+        self.window_map = {}
+        for r in routes:
+            url_val = r.get('url', '')
+            from urllib.parse import urlparse, parse_qs
+            p = urlparse(url_val)
+            q = parse_qs(p.query)
+            w_match = re.search(r'/w/(\d+)/', p.path)
+            if w_match:
+                wid = w_match.group(1)
+                act = q.get('action', [''])[0]
+                if act and act.endswith('.php') and wid not in self.window_map:
+                    self.window_map[wid] = act
+                elif not act:
+                    php_m = re.search(r'/([a-zA-Z0-9_.]+\.php)', p.path)
+                    if php_m and wid not in self.window_map and 'index' not in php_m.group(1):
+                        self.window_map[wid] = php_m.group(1)
 
         if self.workers > 1:
             with ThreadPoolExecutor(max_workers=self.workers) as pool:
