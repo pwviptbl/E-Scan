@@ -9,7 +9,7 @@ import json
 import asyncio
 import threading
 import re
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 from mitmproxy import options, http
 from mitmproxy.tools.dump import DumpMaster
 from core.campaign import build_campaign, is_static_resource
@@ -21,9 +21,18 @@ class DastCaptureAddon:
         self.history = []
         self.lock = threading.Lock()
         self.on_new_route_callback = on_new_route_callback
+        self.current_routine = ""
+        self.current_action = ""
 
     def request(self, flow: http.HTTPFlow):
-        pass
+        req = flow.request
+        if req.path.startswith("/__dast_context"):
+            qs = parse_qs(urlparse(req.url).query)
+            with self.lock:
+                self.current_routine = qs.get("routine", [""])[0]
+                self.current_action = qs.get("action", [""])[0]
+            flow.response = http.Response.make(200, b"OK", {"Content-Type": "text/plain"})
+            return
 
     def response(self, flow: http.HTTPFlow):
         req = flow.request
@@ -84,8 +93,8 @@ class DastCaptureAddon:
 
         body_str = req.get_text() if req.raw_content else ""
 
-        routine_header = headers_dict.get("x-dast-routine") or headers_dict.get("X-DAST-Routine") or ""
-        action_header = headers_dict.get("x-dast-action") or headers_dict.get("X-DAST-Action") or ""
+        routine_header = headers_dict.get("x-dast-routine") or headers_dict.get("X-DAST-Routine") or self.current_routine or ""
+        action_header = headers_dict.get("x-dast-action") or headers_dict.get("X-DAST-Action") or self.current_action or ""
 
         entry = {
             "id": len(self.history) + 1,

@@ -102,11 +102,11 @@ class DastScanner:
 
         action = qs.get("action", [""])[0]
         if not action:
-            php_match = re.search(r"/([a-zA-Z0-9_]+\.php)", parsed.path)
+            php_match = re.search(r"/([a-zA-Z0-9_.]+\.php)", parsed.path)
             if php_match:
                 action = php_match.group(1)
 
-        # 3. Consulta no mapa de rotinas extraído dinamicamente pelo crawler
+        # 3. Consulta no mapa de rotinas diretamente pela action da URL
         if self.routines_map and action:
             info = self.routines_map.get(action)
             if not info and "?" in action:
@@ -119,7 +119,35 @@ class DastScanner:
             elif isinstance(info, str):
                 return info, action
 
-        # 4. Endpoints estruturais bem conhecidos do E-cidade
+        # 4. Rastreamento inteligente via Referer para RPCs, submits e chamadas Ajax
+        referer = ""
+        for k, v in headers.items():
+            if k.lower() == "referer" and v:
+                referer = v
+                break
+
+        if referer and self.routines_map:
+            ref_parsed = urlparse(referer)
+            ref_qs = parse_qs(ref_parsed.query)
+            ref_action = ref_qs.get("action", [""])[0]
+            if not ref_action:
+                ref_match = re.search(r"/([a-zA-Z0-9_.]+\.php)", ref_parsed.path)
+                if ref_match:
+                    ref_action = ref_match.group(1)
+
+            if ref_action:
+                ref_info = self.routines_map.get(ref_action)
+                if not ref_info and "?" in ref_action:
+                    ref_info = self.routines_map.get(ref_action.split("?")[0])
+                if not ref_info:
+                    ref_info = self.routines_map.get(ref_action.split("?")[0])
+
+                if ref_info:
+                    breadcrumb = ref_info.get("breadcrumb", ref_action) if isinstance(ref_info, dict) else ref_info
+                    action_display = f"{ref_action} (RPC: {action})" if action and action != ref_action else (action or ref_action)
+                    return breadcrumb, action_display
+
+        # 5. Endpoints estruturais bem conhecidos do E-cidade
         if "extension/desktop/Menu/getModulos" in parsed.path:
             return "Menu Principal > Seleção de Módulos", ""
         if "extension/desktop/Menu/getItensMenu" in parsed.path:
@@ -501,13 +529,35 @@ class DastScanner:
             if action_str:
                 routine_block += f"**Arquivo (Action):** `{action_str}`\n"
 
+            if ".rpc.php" in f['url'].lower() or "rpc" in f['url'].lower():
+                endpoint_label = f"**Endpoint (Chamada RPC):** `{f['method']} {f['url']}`\n"
+            else:
+                endpoint_label = f"**Endpoint:** `{f['method']} {f['url']}`\n"
+
             evidence_str = str(f.get("evidence", ""))
             full_description = (
                 f"{f['description']}\n\n"
                 f"{routine_block}"
-                f"**Endpoint:** `{f['method']} {f['url']}`\n"
+                f"{endpoint_label}"
                 f"**Parâmetro:** `{param_str}`\n\n"
                 f"**Evidência / Resposta do Servidor:**\n```text\n{evidence_str}\n```"
+            )
+
+            step_1 = f"1. Acessar a rotina '{routine_str}'"
+            if action_str:
+                step_1 += f" (Tela/Arquivo: `{action_str}`)"
+            step_1 += "."
+
+            if ".rpc.php" in f['url'].lower() or "rpc" in f['url'].lower():
+                step_2 = f"2. A rotina dispara a requisição em segundo plano ({f['method']} `{f['url']}`)."
+            else:
+                step_2 = f"2. Enviar requisição {f['method']} para `{f['url']}`."
+
+            steps_reproduce = (
+                f"{step_1}\n"
+                f"{step_2}\n"
+                f"3. Injetar payload de teste no parâmetro `{param_str}`.\n"
+                f"4. Observar quebra sintática de query / comportamento diferencial no backend."
             )
 
             finding_dict = {
@@ -521,7 +571,7 @@ class DastScanner:
                 "active": True,
                 "verified": True,
                 "false_p": False,
-                "steps_to_reproduce": f"1. Acessar a rotina '{routine_str}'.\n2. Enviar requisição {f['method']} para `{f['url']}`.\n3. Injetar payload de teste no parâmetro `{param_str}`.\n4. Observar quebra sintática de query / execução na resposta.",
+                "steps_to_reproduce": steps_reproduce,
                 "severity_justification": f"Severidade {sev} baseada no impacto direto da falha {f['title']}.",
                 "references": f"https://cwe.mitre.org/data/definitions/{cwe}.html" if cwe else ""
             }
