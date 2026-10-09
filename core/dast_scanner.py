@@ -15,16 +15,22 @@ from scanners.xss_module import XssModule
 from scanners.lfi_module import LfiModule
 from scanners.idor_module import IdorModule
 
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 class DastScanner:
-    def __init__(self, types="sqli,xss", param_location="all"):
+    def __init__(self, types="sqli,xss", param_location="all", workers=1, sqli_types="error,boolean,time"):
         self.enabled_types = [t.strip().lower() for t in types.split(",")]
         self.param_location = param_location.lower()
+        self.workers = workers
+        self._findings_lock = threading.Lock()
         self.modules = {}
         self.routines_map = {}
+        self._passive_seen = set()
         self.ignore_params = self._load_ignore_params()
 
         if "sqli" in self.enabled_types:
-            self.modules["SQLi"] = SqlInjectionModule()
+            self.modules["SQLi"] = SqlInjectionModule(sqli_types=sqli_types)
         if "xss" in self.enabled_types:
             self.modules["XSS"] = XssModule()
         if "lfi" in self.enabled_types:
@@ -164,6 +170,20 @@ class DastScanner:
 
         return "Geral / Infraestrutura", ""
 
+    def _scan_single_route(self, idx, total, route, active_only):
+        method = route.get("method", "GET").upper()
+        url = route.get("url", "")
+        routine, action_file = self.resolve_routine(route)
+        route["routine"] = routine
+        route["action_file"] = action_file
+
+        routine_display = f" | Rotina: {routine}" if routine else ""
+        print(f"[{idx}/{total}] {method} {url}{routine_display}")
+
+        if not active_only:
+            self._passive_audit(route)
+        self._active_audit(route)
+
     def scan_campaign(self, campaign_data, active_only=False):
         routes = campaign_data.get("routes", [])
         scan_label = "ATIVO (Apenas injeções)" if active_only else "COMPLETO (Ativo + Passivo)"
@@ -178,22 +198,14 @@ class DastScanner:
             except Exception:
                 pass
 
-        for idx, route in enumerate(routes, 1):
-            method = route.get("method", "GET").upper()
-            url = route.get("url", "")
-            routine, action_file = self.resolve_routine(route)
-            route["routine"] = routine
-            route["action_file"] = action_file
-
-            routine_display = f" | Rotina: {routine}" if routine else ""
-            print(f"[{idx}/{len(routes)}] {method} {url}{routine_display}")
-
-            # 1. Auditoria Passiva de Headers e Cookies (se não for active_only)
-            if not active_only:
-                self._passive_audit(route)
-
-            # 2. Auditoria Ativa (Fuzzing de Parâmetros)
-            self._active_audit(route)
+        if self.workers > 1:
+            with ThreadPoolExecutor(max_workers=self.workers) as pool:
+                futs = [pool.submit(self._scan_single_route, idx, len(routes), route, active_only) for idx, route in enumerate(routes, 1)]
+                for f in as_completed(futs):
+                    f.result()
+        else:
+            for idx, route in enumerate(routes, 1):
+                self._scan_single_route(idx, len(routes), route, active_only)
 
         return self.findings
 
@@ -202,51 +214,58 @@ class DastScanner:
         url = route.get("url", "")
         routine = route.get("routine", "Geral")
         action_file = route.get("action_file", "")
+        host = urlparse(url).netloc
 
         # Cookie Security
         cookies = headers.get("set-cookie", "")
         if cookies and ("phpsessid" in cookies.lower() or "ecidadewindow" in cookies.lower()):
-            if "httponly" not in cookies.lower():
-                self.findings.append({
-                    "title": "Cookie de Sessão sem flag HttpOnly",
-                    "severity": "Média",
-                    "type": "CWE-1004",
-                    "url": url,
-                    "method": route.get("method"),
-                    "param": "Set-Cookie",
-                    "routine": routine,
-                    "action_file": action_file,
-                    "evidence": cookies,
-                    "description": "O cookie de sessão do PHP/E-cidade não possui a diretiva HttpOnly, permitindo roubo de sessão via XSS."
-                })
-            if "samesite" not in cookies.lower():
-                self.findings.append({
-                    "title": "Cookie de Sessão sem flag SameSite",
-                    "severity": "Baixa",
-                    "type": "CWE-1275",
-                    "url": url,
-                    "method": route.get("method"),
-                    "param": "Set-Cookie",
-                    "routine": routine,
-                    "action_file": action_file,
-                    "evidence": cookies,
-                    "description": "Cookie de sessão desprotegido contra CSRF cross-origin."
-                })
+            with self._findings_lock:
+                if "httponly" not in cookies.lower() and ("HttpOnly", host) not in self._passive_seen:
+                    self._passive_seen.add(("HttpOnly", host))
+                    self.findings.append({
+                        "title": "Cookie de Sessão sem flag HttpOnly",
+                        "severity": "Média",
+                        "type": "CWE-1004",
+                        "url": url,
+                        "method": route.get("method"),
+                        "param": "Set-Cookie",
+                        "routine": routine,
+                        "action_file": action_file,
+                        "evidence": cookies,
+                        "description": "O cookie de sessão do PHP/E-cidade não possui a diretiva HttpOnly, permitindo roubo de sessão via XSS."
+                    })
+                if "samesite" not in cookies.lower() and ("SameSite", host) not in self._passive_seen:
+                    self._passive_seen.add(("SameSite", host))
+                    self.findings.append({
+                        "title": "Cookie de Sessão sem flag SameSite",
+                        "severity": "Baixa",
+                        "type": "CWE-1275",
+                        "url": url,
+                        "method": route.get("method"),
+                        "param": "Set-Cookie",
+                        "routine": routine,
+                        "action_file": action_file,
+                        "evidence": cookies,
+                        "description": "Cookie de sessão desprotegido contra CSRF cross-origin."
+                    })
 
         # Anti-Clickjacking
         if "x-frame-options" not in headers and "content-security-policy" not in headers:
-            self.findings.append({
-                "title": "Ausência de Cabeçalho Anti-Clickjacking (X-Frame-Options/CSP)",
-                "severity": "Baixa",
-                "type": "CWE-1021",
-                "url": url,
-                "method": route.get("method"),
-                "param": "Headers",
-                "routine": routine,
-                "action_file": action_file,
-                "evidence": "X-Frame-Options e CSP ausentes",
-                "description": "A aplicação não define restrições de frame-ancestors, permitindo embedding não autorizado em iframes de terceiros."
-            })
+            with self._findings_lock:
+                if ("Anti-Clickjacking", host) not in self._passive_seen:
+                    self._passive_seen.add(("Anti-Clickjacking", host))
+                    self.findings.append({
+                        "title": "Ausência de Cabeçalho Anti-Clickjacking (X-Frame-Options/CSP)",
+                        "severity": "Baixa",
+                        "type": "CWE-1021",
+                        "url": url,
+                        "method": route.get("method"),
+                        "param": "Headers",
+                        "routine": routine,
+                        "action_file": action_file,
+                        "evidence": "X-Frame-Options e CSP ausentes",
+                        "description": "A aplicação não define restrições de frame-ancestors, permitindo embedding não autorizado em iframes de terceiros."
+                    })
 
     def _active_audit(self, route):
         url = route.get("url", "")
@@ -270,8 +289,28 @@ class DastScanner:
 
         # Extrai parâmetros do Body
         body_params = {}
-        if body and "application/x-www-form-urlencoded" in req_headers.get("content-type", req_headers.get("Content-Type", "")):
+        content_type = req_headers.get("content-type", req_headers.get("Content-Type", ""))
+        
+        if body and "application/x-www-form-urlencoded" in content_type:
             body_params = parse_qs(body)
+        elif body and "multipart/form-data" in content_type:
+            boundary_match = re.search(r'boundary=([^;]+)', content_type)
+            if boundary_match:
+                boundary = boundary_match.group(1).strip('"')
+                body_str = body.decode('utf-8', errors='ignore') if isinstance(body, bytes) else str(body)
+                parts = body_str.split(f"--{boundary}")
+                for part in parts:
+                    if 'Content-Disposition: form-data;' in part and 'filename="' not in part:
+                        name_match = re.search(r'name="([^"]+)"', part)
+                        if name_match:
+                            name = name_match.group(1)
+                            value_split = part.split("\r\n\r\n", 1)
+                            if len(value_split) == 2:
+                                val = value_split[1].rstrip("\r\n")
+                                if name in body_params:
+                                    body_params[name].append(val)
+                                else:
+                                    body_params[name] = [val]
         elif body and "=" in str(body):
             body_params = parse_qs(str(body))
 
@@ -374,21 +413,26 @@ class DastScanner:
                 vulns = mod_instance.run_test(request_node, inj_point, oast_client=None)
                 if vulns:
                     for v in vulns:
-                        self.findings.append({
-                            "title": v.name,
-                            "severity": v.severity,
-                            "type": mod_name,
-                            "url": request_node["url"],
-                            "method": request_node["method"],
-                            "param": inj_point["param_name"],
-                            "routine": routine,
-                            "action_file": action_file,
-                            "evidence": str(v.evidence)[:300],
-                            "description": v.description
-                        })
+                        with self._findings_lock:
+                            self.findings.append({
+                                "title": v.name,
+                                "severity": v.severity,
+                                "type": mod_name,
+                                "url": request_node["url"],
+                                "method": request_node["method"],
+                                "param": inj_point["param_name"],
+                                "routine": routine,
+                                "action_file": action_file,
+                                "evidence": str(v.evidence)[:300],
+                                "description": v.description
+                            })
                         print(f"      [!] VULNERABILIDADE DETECTADA: [{v.severity}] {v.name} em {inj_point['param_name']} (Rotina: {routine})")
+            except requests.exceptions.ConnectionError as e:
+                print(f"      -> [ERRO CONEXÃO] Falha ao testar '{inj_point['param_name']}': O container PHP caiu ou recusou conexão.")
+            except requests.exceptions.Timeout:
+                print(f"      -> [TIMEOUT] Tempo excedido no teste de '{inj_point['param_name']}'")
             except Exception as e:
-                pass
+                print(f"      -> [ERRO INESPERADO] {mod_name} falhou em '{inj_point['param_name']}': {e}")
 
     def generate_markdown_report(self, output_path="reports/relatorio_dast.md", metadata=None):
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
@@ -469,8 +513,23 @@ class DastScanner:
         print(f"\n[+] Relatório DAST gerado em: {output_path}")
         return output_path
 
+    def _deduplicate_findings(self):
+        """Remove achados duplicados por (tipo, endpoint_base, parâmetro)."""
+        seen = set()
+        deduped = []
+        for f in self.findings:
+            parsed = urlparse(f.get("url", ""))
+            # Normaliza /w/N/ → /w/X/ para deduplicação cross-window
+            base_path = re.sub(r"/w/\d+/", "/w/X/", parsed.path)
+            key = (f.get("type"), base_path, f.get("param", ""))
+            if key not in seen:
+                seen.add(key)
+                deduped.append(f)
+        self.findings = deduped
+
     def generate_defectdojo_report(self, output_path="reports/defectdojo_findings.json"):
         """Gera arquivo JSON compatível com o formato nativo 'Generic Findings Import' do DefectDojo."""
+        self._deduplicate_findings()
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
         today = time.strftime("%Y-%m-%d")
 
@@ -575,6 +634,8 @@ class DastScanner:
                 "severity_justification": f"Severidade {sev} baseada no impacto direto da falha {f['title']}.",
                 "references": f"https://cwe.mitre.org/data/definitions/{cwe}.html" if cwe else ""
             }
+            if routine_str:
+                finding_dict["component_name"] = routine_str
             if action_str:
                 finding_dict["file_path"] = action_str
 

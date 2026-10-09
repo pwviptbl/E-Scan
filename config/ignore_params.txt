@@ -40,3 +40,7 @@ btn_
 exec
 sexec
 funcao_js
+iinstitid
+iareaid
+imoduloid
+iwindowid

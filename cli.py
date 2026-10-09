@@ -36,8 +36,10 @@ def main():
 @click.option("--port", default=9507, type=int, help="Porta local do proxy de captura.", show_default=True)
 @click.option("--scan-mode", type=click.Choice(["batch", "live"]), default="batch", help="Modo de auditoria: batch ou live.", show_default=True)
 @click.option("--types", default="sqli,xss", help="Módulos de auditoria ativa (sqli, xss, lfi, idor).", show_default=True)
+@click.option("--sqli-types", default="error,boolean,time", help="Subtipos de SQLi: error,boolean,time.", show_default=True)
 @click.option("--params", type=click.Choice(["body", "body-query", "all"]), default="all", help="Onde injetar payloads.", show_default=True)
 @click.option("--active-only", is_flag=True, default=False, help="Executa apenas testes ativos (ignora checagens passivas de cookies/headers).")
+@click.option("--workers", default=1, type=int, help="Paralelismo: número de rotas testadas simultaneamente.", show_default=True)
 @click.option("--campaign-out", default=None, help="Arquivo JSON para exportação da campanha (padrão: nome gerado por data/escopo).")
 @click.option("--report", default=None, help="Arquivo Markdown para o relatório final.")
 @click.option("--dojo-product", default=None, help="Nome do produto no DefectDojo.")
@@ -46,7 +48,7 @@ def main():
 @click.option("--dojo-test-title", default=None, help="Título descritivo do teste no DefectDojo.")
 @click.option("--dojo-upload", is_flag=True, default=False, help="Força envio ao DefectDojo usando config/defectdojo.json.")
 @click.option("--fail-on-findings", is_flag=True, default=False, help="Retorna Exit Code 1 se encontrar vulnerabilidades Críticas/Altas (CI/CD).")
-def run_dast(url, area, modulo, categoria, subcategoria, rotina, max_routines, spec, port, scan_mode, types, params, active_only, campaign_out, report, dojo_product, dojo_engagement, dojo_test_id, dojo_test_title, dojo_upload, fail_on_findings):
+def run_dast(url, area, modulo, categoria, subcategoria, rotina, max_routines, spec, port, scan_mode, types, sqli_types, params, active_only, workers, campaign_out, report, dojo_product, dojo_engagement, dojo_test_id, dojo_test_title, dojo_upload, fail_on_findings):
     """Executa o ciclo completo de DAST: sobe proxy, navega com Cypress, audita e gera relatório."""
     start_time = time.time()
     now_dt = datetime.now()
@@ -100,7 +102,7 @@ def run_dast(url, area, modulo, categoria, subcategoria, rotina, max_routines, s
     click.echo(f"• Porta Proxy: {port}")
 
     # 1. Inicia Proxy Daemon em Background
-    scanner = DastScanner(types=types, param_location=params)
+    scanner = DastScanner(types=types, param_location=params, workers=workers, sqli_types=sqli_types)
 
     def on_live_route(entry):
         if scan_mode == "live":
@@ -165,6 +167,17 @@ def run_dast(url, area, modulo, categoria, subcategoria, rotina, max_routines, s
     )
     proxy.stop()
 
+    # Embutir routines_map.json na campanha
+    routines_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", "routines_map.json")
+    if os.path.exists(routines_path):
+        try:
+            with open(routines_path, "r", encoding="utf-8") as f:
+                campaign["routines_map"] = json.load(f)
+            with open(actual_campaign_out, "w", encoding="utf-8") as out:
+                json.dump(campaign, out, indent=2, ensure_ascii=False)
+        except Exception:
+            pass
+
     # Cria cópia estável para logs/campaign_latest.json
     try:
         shutil.copyfile(actual_campaign_out, "logs/campaign_latest.json")
@@ -201,6 +214,18 @@ def run_dast(url, area, modulo, categoria, subcategoria, rotina, max_routines, s
 
     dojo_conf = load_dojo_config()
     should_upload = dojo_upload or bool(dojo_product) or bool(dojo_engagement) or (dojo_test_id is not None) or dojo_conf.get("auto_upload", False)
+    
+    # Proteção contra Reimport Destrutivo
+    if should_upload and dojo_test_id is not None and dojo_conf.get("close_old_findings", False):
+        click.echo(click.style(
+            f"\n[⚠️  ATENÇÃO] Você está prestes a fazer REIMPORT no Test #{dojo_test_id} "
+            f"com close_old_findings=true. Isso MITIGARÁ todos os achados anteriores desse teste.",
+            fg="red", bold=True
+        ))
+        if not click.confirm("Deseja realmente prosseguir com o reimport destrutivo?", default=False):
+            click.echo(click.style("Envio ao DefectDojo abortado pelo usuário.", fg="yellow"))
+            should_upload = False
+
     if should_upload:
         click.echo(click.style(f"\n[*] Processando envio dos achados para o DefectDojo...", fg="cyan"))
 
@@ -266,8 +291,10 @@ def run_dast(url, area, modulo, categoria, subcategoria, rotina, max_routines, s
 @main.command("scan")
 @click.option("--campaign", default="logs/campaign_latest.json", help="Arquivo JSON de campanha já capturada.", show_default=True)
 @click.option("--types", default="sqli,xss", help="Módulos de auditoria ativa (sqli, xss, lfi, idor).", show_default=True)
+@click.option("--sqli-types", default="error,boolean,time", help="Subtipos de SQLi: error,boolean,time.", show_default=True)
 @click.option("--params", type=click.Choice(["body", "body-query", "all"]), default="all", help="Onde injetar payloads.", show_default=True)
 @click.option("--active-only", is_flag=True, default=True, help="Executa apenas testes ativos (ignora passivos de cookies/headers).", show_default=True)
+@click.option("--workers", default=1, type=int, help="Paralelismo: número de rotas testadas simultaneamente.", show_default=True)
 @click.option("--report", default=None, help="Arquivo Markdown para o relatório final.")
 @click.option("--dojo-product", default=None, help="Nome do produto no DefectDojo.")
 @click.option("--dojo-engagement", default=None, help="ID numérico ou nome do engagement no DefectDojo (padrão: config/defectdojo.json).")
@@ -275,7 +302,7 @@ def run_dast(url, area, modulo, categoria, subcategoria, rotina, max_routines, s
 @click.option("--dojo-test-title", default=None, help="Título descritivo do teste no DefectDojo.")
 @click.option("--dojo-upload", is_flag=True, default=False, help="Força envio ao DefectDojo usando config/defectdojo.json.")
 @click.option("--fail-on-findings", is_flag=True, default=False, help="Retorna Exit Code 1 se encontrar vulnerabilidades Críticas/Altas.")
-def scan_campaign_cmd(campaign, types, params, active_only, report, dojo_product, dojo_engagement, dojo_test_id, dojo_test_title, dojo_upload, fail_on_findings):
+def scan_campaign_cmd(campaign, types, sqli_types, params, active_only, workers, report, dojo_product, dojo_engagement, dojo_test_id, dojo_test_title, dojo_upload, fail_on_findings):
     """Executa auditoria diretamente sobre uma campanha salva, sem rodar o Cypress."""
     start_time = time.time()
     now_dt = datetime.now()
@@ -306,7 +333,7 @@ def scan_campaign_cmd(campaign, types, params, active_only, report, dojo_product
     click.echo(f"• Módulos Ativos: {types.upper()}")
     click.echo(f"• Relatório Destino: {actual_report}")
 
-    scanner = DastScanner(types=types, param_location=params)
+    scanner = DastScanner(types=types, param_location=params, workers=workers, sqli_types=sqli_types)
     scanner.scan_campaign(campaign_data, active_only=active_only)
 
     report_file = scanner.generate_markdown_report(
@@ -339,6 +366,18 @@ def scan_campaign_cmd(campaign, types, params, active_only, report, dojo_product
 
     dojo_conf = load_dojo_config()
     should_upload = dojo_upload or bool(dojo_product) or bool(dojo_engagement) or (dojo_test_id is not None) or dojo_conf.get("auto_upload", False)
+    
+    # Proteção contra Reimport Destrutivo
+    if should_upload and dojo_test_id is not None and dojo_conf.get("close_old_findings", False):
+        click.echo(click.style(
+            f"\n[⚠️  ATENÇÃO] Você está prestes a fazer REIMPORT no Test #{dojo_test_id} "
+            f"com close_old_findings=true. Isso MITIGARÁ todos os achados anteriores desse teste.",
+            fg="red", bold=True
+        ))
+        if not click.confirm("Deseja realmente prosseguir com o reimport destrutivo?", default=False):
+            click.echo(click.style("Envio ao DefectDojo abortado pelo usuário.", fg="yellow"))
+            should_upload = False
+
     if should_upload:
         click.echo(click.style(f"\n[*] Processando envio dos achados para o DefectDojo...", fg="cyan"))
 
@@ -435,3 +474,48 @@ def dojo_import_cmd(findings_file, product, engagement, test_id, test_title):
 
 if __name__ == "__main__":
     main()
+
+@main.command("dojo-status")
+@click.argument("test_id", type=int)
+def dojo_status_cmd(test_id):
+    """Obtém o status atual de um teste no DefectDojo."""
+    from core.defectdojo_client import get_dojo_test_status
+    ok, data = get_dojo_test_status(test_id)
+    if ok:
+        click.echo(click.style(f"\n[+] Status do Teste #{test_id}", fg="cyan", bold=True))
+        click.echo(f"  • Título: {data['title']}")
+        click.echo(f"  • Engagement: {data['engagement']}")
+        click.echo(f"  • Status: {data['status']}")
+        click.echo(f"  • Total de Achados: {data['findings_count']}")
+        click.echo(f"  • Criado em: {data['created']}")
+        click.echo(f"  • Atualizado em: {data['updated']}")
+    else:
+        click.echo(click.style(f"[-] Erro ao obter status do teste #{test_id}: {data}", fg="red"))
+        sys.exit(1)
+
+@main.command("dojo-clean")
+@click.argument("test_id", type=int)
+@click.option("--force", is_flag=True, help="Ignora a confirmação de segurança (NÃO RECOMENDADO).")
+def dojo_clean_cmd(test_id, force):
+    """Remove (purga) todas as findings atreladas a um Teste no DefectDojo. 
+    Ideal para limpar testes contaminados por execuções defeituosas."""
+    from core.defectdojo_client import get_dojo_test_status, clean_dojo_test
+    
+    ok, data = get_dojo_test_status(test_id)
+    if not ok:
+        click.echo(click.style(f"[-] Teste #{test_id} inacessível ou inexistente: {data}", fg="red"))
+        sys.exit(1)
+        
+    click.echo(click.style(f"\n[⚠️  PERIGO] Você está prestes a EXCLUIR PERMANENTEMENTE TODAS as {data['findings_count']} findings do Teste #{test_id} ('{data['title']}').", fg="red", bold=True))
+    if not force:
+        if not click.confirm("Deseja realmente prosseguir com a exclusão irreversível?", default=False):
+            click.echo(click.style("Operação abortada pelo usuário.", fg="yellow"))
+            sys.exit(0)
+            
+    click.echo(f"[*] Iniciando exclusão (pode levar alguns minutos)...")
+    ok, msg, count = clean_dojo_test(test_id)
+    if ok:
+        click.echo(click.style(f"[✓] Sucesso! {count} findings foram removidas do Teste #{test_id}.", fg="green", bold=True))
+    else:
+        click.echo(click.style(f"[-] Falha parcial/total: {msg}. Removidas: {count}", fg="red"))
+        sys.exit(1)

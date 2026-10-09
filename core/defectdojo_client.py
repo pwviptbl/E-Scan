@@ -138,7 +138,7 @@ def upload_scan_to_defectdojo(
                     if clean_tags:
                         patch_payload["tags"] = clean_tags
 
-                if patch_payload and not t_id:
+                if patch_payload:
                     try:
                         requests.patch(
                             f"{url}/api/v2/tests/{created_test_id}/",
@@ -153,3 +153,77 @@ def upload_scan_to_defectdojo(
 
     except Exception as e:
         return False, str(e), "Erro de Conexão"
+
+def get_dojo_test_status(test_id, config=None):
+    """Obtém estatísticas de um teste no DefectDojo."""
+    conf = config or load_dojo_config()
+    url = (conf.get("url") or "http://127.0.0.1:8080").rstrip("/")
+    token = conf.get("token") or os.environ.get("DEFECTDOJO_TOKEN", "")
+    
+    if not token:
+        return False, "Token não configurado."
+        
+    headers = {"Authorization": f"Token {token}", "Accept": "application/json"}
+    
+    try:
+        res = requests.get(f"{url}/api/v2/tests/{test_id}/", headers=headers, timeout=30)
+        if res.status_code == 404:
+            return False, f"Teste #{test_id} não encontrado no DefectDojo."
+        if res.status_code >= 400:
+            return False, f"Status {res.status_code}: {res.text}"
+            
+        test_data = res.json()
+        
+        # Pega as findings
+        res_find = requests.get(f"{url}/api/v2/findings/?test={test_id}&limit=1", headers=headers, timeout=30)
+        findings_count = 0
+        if res_find.status_code == 200:
+            findings_count = res_find.json().get("count", 0)
+            
+        return True, {
+            "id": test_data.get("id"),
+            "title": test_data.get("title", "Sem Título"),
+            "status": test_data.get("status", "Desconhecido"),
+            "engagement": test_data.get("engagement"),
+            "findings_count": findings_count,
+            "created": test_data.get("created"),
+            "updated": test_data.get("updated")
+        }
+    except Exception as e:
+        return False, str(e)
+
+def clean_dojo_test(test_id, config=None):
+    """Remove (exclui) todas as findings de um teste no DefectDojo, efetivamente limpando-o."""
+    conf = config or load_dojo_config()
+    url = (conf.get("url") or "http://127.0.0.1:8080").rstrip("/")
+    token = conf.get("token") or os.environ.get("DEFECTDOJO_TOKEN", "")
+    
+    if not token:
+        return False, "Token não configurado.", 0
+        
+    headers = {"Authorization": f"Token {token}", "Accept": "application/json"}
+    
+    try:
+        # Pega todas as findings do teste
+        deleted_count = 0
+        while True:
+            res = requests.get(f"{url}/api/v2/findings/?test={test_id}&limit=100", headers=headers, timeout=30)
+            if res.status_code != 200:
+                return False, f"Erro ao buscar findings: {res.text}", deleted_count
+                
+            data = res.json()
+            findings = data.get("results", [])
+            if not findings:
+                break
+                
+            for f in findings:
+                f_id = f["id"]
+                del_res = requests.delete(f"{url}/api/v2/findings/{f_id}/", headers=headers, timeout=10)
+                if del_res.status_code == 204:
+                    deleted_count += 1
+                else:
+                    return False, f"Erro ao deletar finding #{f_id}: {del_res.text}", deleted_count
+                    
+        return True, "Findings excluídas com sucesso.", deleted_count
+    except Exception as e:
+        return False, str(e), 0

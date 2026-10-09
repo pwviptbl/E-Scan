@@ -116,17 +116,35 @@ def rebuild_attack_request(
             headers['Cookie'] = cookie_string.replace(cookie_to_replace, new_cookie, 1)
 
     if location == 'BODY_FORM':
-        body_text = body.decode('utf-8', errors='ignore') if isinstance(body, bytes) else str(body or "")
-        form_data = parse_qs(body_text)
-        if param_name in form_data:
-            for i, val in enumerate(form_data[param_name]):
-                if val == original_value:
-                    form_data[param_name][i] = payload
-                    break
-        data = urlencode(form_data, doseq=True)
-        # Ensure Content-Type is set for form data
-        if 'Content-Type' not in headers and 'content-type' not in headers:
-            headers['Content-Type'] = 'application/x-www-form-urlencoded'
+        content_type = headers.get('Content-Type') or headers.get('content-type') or ''
+        if 'multipart/form-data' in content_type:
+            body_text = body.decode('utf-8', errors='ignore') if isinstance(body, bytes) else str(body or "")
+            boundary_match = re.search(r'boundary=([^;]+)', content_type)
+            if boundary_match:
+                boundary = boundary_match.group(1).strip('"')
+                parts = body_text.split(f"--{boundary}")
+                for i, part in enumerate(parts):
+                    if f'name="{param_name}"' in part and 'filename="' not in part:
+                        value_split = part.split("\r\n\r\n", 1)
+                        if len(value_split) == 2:
+                            val = value_split[1]
+                            new_val = payload + "\r\n" if val.endswith("\r\n") else payload
+                            parts[i] = part.replace(f"\r\n\r\n{val}", f"\r\n\r\n{new_val}")
+                            break
+                data = f"--{boundary}".join(parts)
+            else:
+                data = body
+        else:
+            body_text = body.decode('utf-8', errors='ignore') if isinstance(body, bytes) else str(body or "")
+            form_data = parse_qs(body_text)
+            if param_name in form_data:
+                for i, val in enumerate(form_data[param_name]):
+                    if val == original_value:
+                        form_data[param_name][i] = payload
+                        break
+            data = urlencode(form_data, doseq=True)
+            if 'Content-Type' not in headers and 'content-type' not in headers:
+                headers['Content-Type'] = 'application/x-www-form-urlencoded'
 
     if location == 'BODY_FORM_JSON':
         body_text = body.decode('utf-8', errors='ignore') if isinstance(body, bytes) else str(body or "")

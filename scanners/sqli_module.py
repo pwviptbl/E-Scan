@@ -14,6 +14,9 @@ OASTClient = Any
 class SqlInjectionModule(IScanModule):
     """Detecta SQLi (error-based + time-based) em pontos de injecao."""
 
+    def __init__(self, sqli_types="error,boolean,time"):
+        self.sqli_types = [t.strip().lower() for t in sqli_types.split(",")]
+
     SQL_ERROR_PATTERNS = [
         r"(?i)sql\s+syntax",
         r"(?i)mysql_",
@@ -59,7 +62,6 @@ class SqlInjectionModule(IScanModule):
         num_val = original_value if is_numeric else "1"
 
         # Error-based payloads
-        # Foco estrito em erro de sintaxe, tipos inválidos e divisão por zero (sem varredura massiva de tabela)
         error_payloads = [
             "'",
             '"',
@@ -73,39 +75,38 @@ class SqlInjectionModule(IScanModule):
         if is_numeric:
             error_payloads = [f"{original_value}'"] + error_payloads
 
-        for payload in error_payloads:
-            try:
-                request_to_send = rebuild_attack_request(request_node, injection_point, payload)
-                response = session.send(request_to_send, timeout=session.timeout, allow_redirects=False)
-                if self._has_sql_error(response.text):
-                    snippet = self._extract_error_snippet(response.text)
-                    return [
-                        Vulnerability(
-                            name="SQL Injection (Error-Based)",
-                            severity="High",
-                            description=(
-                                "SQL Injection detectada por mensagens de erro no response. "
-                                f"Payload '{payload}' em '{injection_point['parameter_name']}'."
-                            ),
-                            evidence=f"Payload: {payload} | Match: {snippet}",
-                            request_node_id=request_node['id'],
-                            injection_point_id=injection_point['id']
-                        )
-                    ]
-            except requests.exceptions.RequestException:
-                continue
-            except Exception:
-                return []
+        if "error" in self.sqli_types:
+            for payload in error_payloads:
+                try:
+                    request_to_send = rebuild_attack_request(request_node, injection_point, payload)
+                    response = session.send(request_to_send, timeout=session.timeout, allow_redirects=False)
+                    if self._has_sql_error(response.text):
+                        snippet = self._extract_error_snippet(response.text)
+                        return [
+                            Vulnerability(
+                                name="SQL Injection (Error-Based)",
+                                severity="High",
+                                description=(
+                                    "SQL Injection detectada por mensagens de erro no response. "
+                                    f"Payload '{payload}' em '{injection_point['parameter_name']}'."
+                                ),
+                                evidence=f"Payload: {payload} | Match: {snippet}",
+                                request_node_id=request_node['id'],
+                                injection_point_id=injection_point['id']
+                            )
+                        ]
+                except requests.exceptions.RequestException:
+                    continue
+                except Exception:
+                    return []
 
-        boolean_payloads = self._boolean_payloads(original_value, is_numeric)
-        boolean_vuln = self._check_boolean_based(session, request_node, injection_point, boolean_payloads)
-        if boolean_vuln:
-            return [boolean_vuln]
+        if "boolean" in self.sqli_types:
+            boolean_payloads = self._boolean_payloads(original_value, is_numeric)
+            boolean_vuln = self._check_boolean_based(session, request_node, injection_point, boolean_payloads)
+            if boolean_vuln:
+                return [boolean_vuln]
 
         # Time-based payloads especializados para PostgreSQL / PHP (pg_query) e E-cidade
-        # 1. Subconsultas em inteiros (funciona em argumentos de função fc_*, WHERE id = ..., etc.)
-        # 2. Stacked queries com e sem fechamento de parênteses (nativas no pg_query do PHP)
-        # 3. Injeções em strings e fallback MySQL
         time_payloads = [
             f"{num_val} + (SELECT 0 FROM pg_sleep(3))",
             f"(SELECT {num_val} FROM pg_sleep(3))",
@@ -119,61 +120,62 @@ class SqlInjectionModule(IScanModule):
             f"{original_value}' AND SLEEP(3)-- ",
         ]
 
-        for payload in time_payloads:
-            try:
-                start = time.time()
-                request_to_send = rebuild_attack_request(request_node, injection_point, payload)
-                session.send(request_to_send, timeout=session.timeout, allow_redirects=False)
-                elapsed = time.time() - start
-                if elapsed >= 3.0:
-                    # 1. Mede a requisição baseline normal
-                    try:
-                        t_base_start = time.time()
-                        base_req = rebuild_attack_request(request_node, injection_point, original_value)
-                        session.send(base_req, timeout=session.timeout, allow_redirects=False)
-                        base_elapsed = time.time() - t_base_start
-                    except Exception:
-                        base_elapsed = 0.0
+        if "time" in self.sqli_types:
+            for payload in time_payloads:
+                try:
+                    start = time.time()
+                    request_to_send = rebuild_attack_request(request_node, injection_point, payload)
+                    session.send(request_to_send, timeout=session.timeout, allow_redirects=False)
+                    elapsed = time.time() - start
+                    if elapsed >= 3.0:
+                        # 1. Mede a requisição baseline normal
+                        try:
+                            t_base_start = time.time()
+                            base_req = rebuild_attack_request(request_node, injection_point, original_value)
+                            session.send(base_req, timeout=session.timeout, allow_redirects=False)
+                            base_elapsed = time.time() - t_base_start
+                        except Exception:
+                            base_elapsed = 0.0
 
-                    dynamic_threshold = max(base_elapsed * 1.5 + 0.5, base_elapsed + 2.5)
-                    if elapsed < dynamic_threshold:
-                        continue
+                        dynamic_threshold = max(base_elapsed * 1.5 + 0.5, base_elapsed + 2.5)
+                        if elapsed < dynamic_threshold:
+                            continue
 
-                    # 2. CONTRAPROVA COM DOUBLE-SLEEP:
-                    # Dispara segundo teste escalonando para pg_sleep(5).
-                    # Se for SQLi real no PostgreSQL, o tempo deve aumentar proporcionalmente (~5s + baseline).
-                    # Se for mero gargalo do PHP ou oscilação de rede/VPN, o segundo teste NÃO escalará.
-                    confirm_payload = payload.replace("pg_sleep(3)", "pg_sleep(5)").replace("SLEEP(3)", "SLEEP(5)")
-                    try:
-                        t_conf_start = time.time()
-                        confirm_req = rebuild_attack_request(request_node, injection_point, confirm_payload)
-                        session.send(confirm_req, timeout=12, allow_redirects=False)
-                        confirm_elapsed = time.time() - t_conf_start
-                    except Exception:
-                        continue
+                        # 2. CONTRAPROVA COM DOUBLE-SLEEP:
+                        # Dispara segundo teste escalonando para pg_sleep(5).
+                        # Se for SQLi real no PostgreSQL, o tempo deve aumentar proporcionalmente (~5s + baseline).
+                        # Se for mero gargalo do PHP ou oscilação de rede/VPN, o segundo teste NÃO escalará.
+                        confirm_payload = payload.replace("pg_sleep(3)", "pg_sleep(5)").replace("SLEEP(3)", "SLEEP(5)")
+                        try:
+                            t_conf_start = time.time()
+                            confirm_req = rebuild_attack_request(request_node, injection_point, confirm_payload)
+                            session.send(confirm_req, timeout=12, allow_redirects=False)
+                            confirm_elapsed = time.time() - t_conf_start
+                        except Exception:
+                            continue
 
-                    # Valida se o sleep(5) demorou proporcionalmente mais que o sleep(3)
-                    if confirm_elapsed >= (base_elapsed + 4.2) and (confirm_elapsed >= elapsed + 1.2):
-                        return [
-                            Vulnerability(
-                                name="SQL Injection (Time-Based)",
-                                severity="High",
-                                description=(
-                                    "SQL Injection confirmada via PostgreSQL pg_sleep com validação diferencial (Double-Sleep). "
-                                    f"Payload '{payload}' em '{injection_point['parameter_name']}'."
-                                ),
-                                evidence=(
-                                    f"Payload: {payload} | Sleep(3): {elapsed:.2f}s | "
-                                    f"Contraprova Sleep(5): {confirm_elapsed:.2f}s | Baseline: {base_elapsed:.2f}s"
-                                ),
-                                request_node_id=request_node['id'],
-                                injection_point_id=injection_point['id']
-                            )
-                        ]
-            except requests.exceptions.RequestException:
-                continue
-            except Exception:
-                return []
+                        # Valida se o sleep(5) demorou proporcionalmente mais que o sleep(3)
+                        if confirm_elapsed >= (base_elapsed + 4.2) and (confirm_elapsed >= elapsed + 1.2):
+                            return [
+                                Vulnerability(
+                                    name="SQL Injection (Time-Based)",
+                                    severity="High",
+                                    description=(
+                                        "SQL Injection confirmada via PostgreSQL pg_sleep com validação diferencial (Double-Sleep). "
+                                        f"Payload '{payload}' em '{injection_point['parameter_name']}'."
+                                    ),
+                                    evidence=(
+                                        f"Payload: {payload} | Sleep(3): {elapsed:.2f}s | "
+                                        f"Contraprova Sleep(5): {confirm_elapsed:.2f}s | Baseline: {base_elapsed:.2f}s"
+                                    ),
+                                    request_node_id=request_node['id'],
+                                    injection_point_id=injection_point['id']
+                                )
+                            ]
+                except requests.exceptions.RequestException:
+                    continue
+                except Exception:
+                    return []
 
 
 
@@ -211,7 +213,17 @@ class SqlInjectionModule(IScanModule):
             false_len = len(false_response.text or "")
             true_delta = abs(base_len - true_len)
             false_delta = abs(base_len - false_len)
-            threshold = max(30, int(max(base_len, 1) * 0.08))
+            
+            threshold = max(50, int(max(base_len, 1) * 0.12))
+            
+            # Duplo baseline para medir ruído natural da página (variabilidade de tokens, timers)
+            try:
+                base2_req = rebuild_attack_request(request_node, injection_point, str(injection_point.get('original_value', '')))
+                base2_resp = session.send(base2_req, timeout=session.timeout, allow_redirects=False)
+                natural_noise = abs(base_len - len(base2_resp.text or ""))
+                threshold = max(threshold, natural_noise * 2 + 20)
+            except Exception:
+                pass
 
             true_like_base = true_response.status_code == base_response.status_code and true_delta <= threshold
             false_different = (
