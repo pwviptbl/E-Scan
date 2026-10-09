@@ -43,16 +43,7 @@ describe("E-cidade DAST - Crawler Automático de Menus e Rotinas", () => {
     return leaves;
   }
 
-  let currentLeaf = null;
-
   beforeEach(() => {
-    cy.intercept("**", (req) => {
-      if (currentLeaf) {
-        req.headers["x-dast-routine"] = currentLeaf.breadcrumb;
-        req.headers["x-dast-action"] = currentLeaf.action;
-      }
-    });
-
     cy.loginEcidade("dbseller", "");
     cy.url().should("include", "extension/desktop");
     cy.closeAllDesktopWindows();
@@ -188,15 +179,7 @@ describe("E-cidade DAST - Crawler Automático de Menus e Rotinas", () => {
 
       // Executa sequencialmente cada rotina terminal via navegação DOM
       leaves.forEach((leaf, idx) => {
-        currentLeaf = leaf;
         cy.task("log", `[DAST] [${idx + 1}/${leaves.length}] Executando: ${leaf.breadcrumb} (${leaf.action})`);
-
-        // Sincroniza a rotina ativa com o Proxy Daemon para enriquecimento das capturas
-        const proxyPort = Cypress.env("PROXY_PORT") || 9507;
-        cy.request({
-          url: `http://127.0.0.1:${proxyPort}/__dast_context?routine=${encodeURIComponent(leaf.breadcrumb)}&action=${encodeURIComponent(leaf.action)}`,
-          failOnStatusCode: false
-        });
 
         // 1. Limpa janelas abertas
         cy.closeAllDesktopWindows();
