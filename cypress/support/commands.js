@@ -174,20 +174,32 @@ Cypress.Commands.add("fuzzGenericForm", () => {
         }
       });
 
-      // 6. Clica no botao de acao principal (prioriza inclusao / persistencia)
-      const primarySubmitBtn = $root.find(
-        "input[name='incluir'], input[value*='Incluir'], input[name='salvar'], input[value*='Salvar'], input[type='submit'][value*='Incluir']"
+      // 6. Clica no botao de acao principal.
+      // Prioridade: 1) gravacao (inclusao/alteracao), 2) operacao da rotina
+      // (processar/executar/cancelar/estornar/etc), 3) pesquisa. Como ultimo
+      // recurso, qualquer submit ou input[type=button] com onclick (padrao
+      // legado do E-cidade), para nao deixar nenhuma rotina sem exercitar.
+      // Obs: "Cancelar" aqui e operacao de negocio (ex: cancelar debito), nao
+      // fecha a tela -- a unica saida do iframe no E-cidade e o botao X.
+      const persistBtn = $root.find(
+        "input[name='incluir'], input[value*='Incluir'], input[name='salvar'], input[value*='Salvar'], input[name='alterar'], input[value*='Alterar'], input[value*='Gravar']"
       ).first();
 
-      const secondarySubmitBtn = $root.find(
-        "input[name='alterar'], input[value*='Alterar'], input[value*='Gravar'], input[type='submit']"
+      const operationBtn = $root.find(
+        "input[value*='Processar'], input[value*='Executar'], input[value*='Confirmar'], input[value*='Cancelar'], input[value*='Estornar'], input[value*='Gerar'], input[value*='Calcular'], input[value*='Baixar'], input[value*='Emitir'], input[value*='Efetivar'], input[name='processar'], input[name='executar'], input[name='confirmar'], input[name='cancelar'], input[name='estornar']"
       ).first();
 
       const searchBtn = $root.find(
         "input[name='pesquisar'], input[value*='Pesquisar'], input#pesquisar2, input[value*='Consultar']"
       ).first();
 
-      const btnToClick = primarySubmitBtn.length > 0 ? primarySubmitBtn : (secondarySubmitBtn.length > 0 ? secondarySubmitBtn : searchBtn);
+      const fallbackBtn = $root.find(
+        "input[type='submit'], input[type='button'][onclick], button[type='submit'], button[onclick]"
+      ).first();
+
+      const btnToClick = persistBtn.length > 0 ? persistBtn
+        : (operationBtn.length > 0 ? operationBtn
+        : (searchBtn.length > 0 ? searchBtn : fallbackBtn));
 
       if (btnToClick && btnToClick.length > 0) {
         const btnName = btnToClick.attr("name") || "incluir";
