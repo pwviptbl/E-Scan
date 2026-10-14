@@ -12,7 +12,7 @@ import re
 from urllib.parse import urlparse, parse_qs
 from mitmproxy import options, http
 from mitmproxy.tools.dump import DumpMaster
-from core.campaign import build_campaign, is_static_resource
+from core.campaign import build_campaign, is_static_resource, route_signature
 from core.ignore_rules import is_ignored_url, has_valid_php_parameters
 from core.logging_config import get_logger
 
@@ -22,11 +22,88 @@ class DastCaptureAddon:
     def __init__(self, target_scope=None, on_new_route_callback=None):
         self.target_scope = target_scope or []
         self.history = []
+        self._sig_index = {}
         self.lock = threading.Lock()
         self.on_new_route_callback = on_new_route_callback
 
+    def _passes_url_filters(self, url, host, method):
+        """Filtros baseados só na requisição (escopo, ignorados, params válidos)."""
+        if self.target_scope:
+            if not any(s.lower() in (host or "").lower() for s in self.target_scope):
+                return False
+        if is_ignored_url(url):
+            return False
+        if not has_valid_php_parameters(url, method=method):
+            return False
+        return True
+
+    def _record(self, entry, has_response):
+        """Registra a rota deduplicando por assinatura. Entradas vindas do
+        request() entram mesmo sem resposta (lookups de iframe cancelados nunca
+        disparam response()); quando a resposta chega depois, enriquece a
+        entrada existente com status/headers de resposta."""
+        sig = "|".join(map(str, route_signature(entry)))
+        is_new = False
+        cb_entry = None
+        with self.lock:
+            if sig in self._sig_index:
+                if has_response:
+                    idx = self._sig_index[sig]
+                    prev = self.history[idx]
+                    entry["id"] = prev.get("id", idx + 1)
+                    if not entry.get("routine") and prev.get("routine"):
+                        entry["routine"] = prev["routine"]
+                    if not entry.get("action_file") and prev.get("action_file"):
+                        entry["action_file"] = prev["action_file"]
+                    self.history[idx] = entry
+                return
+            entry["id"] = len(self.history) + 1
+            self._sig_index[sig] = len(self.history)
+            self.history.append(entry)
+            is_new = True
+            cb_entry = entry
+
+        if is_new and self.on_new_route_callback:
+            try:
+                self.on_new_route_callback(cb_entry)
+            except Exception:
+                pass
+
     def request(self, flow: http.HTTPFlow):
-        pass
+        # Instrumentacao opcional: loga TODA requisicao que chega ao proxy,
+        # antes de qualquer filtro. Inerte sem a env var DAST_DEBUG_REQLOG.
+        dbg = os.environ.get("DAST_DEBUG_REQLOG")
+        if dbg:
+            try:
+                with open(dbg, "a", encoding="utf-8") as f:
+                    f.write(f"{flow.request.method}\t{flow.request.url}\n")
+            except Exception:
+                pass
+
+        # Captura a rota já no request(): assim lookups de iframe que são
+        # cancelados/substituídos (abre -> busca em sequência rápida) e nunca
+        # disparam response() ainda viram rotas testáveis. Para o scan ativo de
+        # SQLi basta a requisição; a resposta enriquece depois, se chegar.
+        req = flow.request
+        if not self._passes_url_filters(req.url, req.pretty_host, req.method):
+            return
+        headers_dict = dict(req.headers)
+        body_str = req.get_text() if req.raw_content else ""
+        entry = {
+            "method": req.method.upper(),
+            "url": req.url,
+            "path": req.path,
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "request_headers": headers_dict,
+            "request_body": body_str,
+            "response_status": None,
+            "response_headers": {},
+            "routine": headers_dict.get("x-dast-routine") or headers_dict.get("X-DAST-Routine") or "",
+            "action_file": headers_dict.get("x-dast-action") or headers_dict.get("X-DAST-Action") or "",
+        }
+        if is_static_resource(entry):
+            return
+        self._record(entry, has_response=False)
 
     def response(self, flow: http.HTTPFlow):
         req = flow.request
@@ -91,7 +168,6 @@ class DastCaptureAddon:
         action_header = headers_dict.get("x-dast-action") or headers_dict.get("X-DAST-Action") or ""
 
         entry = {
-            "id": len(self.history) + 1,
             "method": req.method.upper(),
             "url": req.url,
             "path": req.path,
@@ -108,14 +184,7 @@ class DastCaptureAddon:
         if is_static_resource(entry):
             return
 
-        with self.lock:
-            self.history.append(entry)
-
-        if self.on_new_route_callback:
-            try:
-                self.on_new_route_callback(entry)
-            except Exception as e:
-                pass
+        self._record(entry, has_response=True)
 
 
 class ProxyDaemon:

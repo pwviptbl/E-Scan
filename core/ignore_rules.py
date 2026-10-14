@@ -20,17 +20,27 @@ def load_ignore_patterns():
 def is_ignored_url(url_or_entry):
     """
     Verifica se a URL deve ser descartada pelo proxy com base na lista de ignorados.
+
+    Importante: padrões de EXTENSÃO (que começam com ".", ex: .js, .css) são
+    casados apenas no FIM do PATH, nunca como substring da URL inteira. Caso
+    contrário, um valor de query como funcao_js=parent.js_preenche faria a rota
+    func_*.php (lookup de chave estrangeira do E-cidade) ser descartada como se
+    fosse um arquivo .js estático. Padrões nomeados (ex: con4_dbhelp.RPC.php)
+    continuam sendo casados como substring do path.
     """
     if isinstance(url_or_entry, dict):
         url = str(url_or_entry.get("url") or "")
     else:
         url = str(url_or_entry or "")
 
-    url_lower = url.lower()
+    path_lower = (urlparse(url).path or "").lower()
     patterns = load_ignore_patterns()
 
     for pat in patterns:
-        if pat in url_lower:
+        if pat.startswith("."):
+            if path_lower.endswith(pat):
+                return True
+        elif pat in path_lower:
             return True
 
     return False
