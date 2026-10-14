@@ -41,6 +41,34 @@ class SqlInjectionModule(IScanModule):
         r"(?i)erro_status",
         r"(?i)fatal.*error.*pg_",
         r"(?i)warning.*pg_",
+        # --- Assinaturas adicionais pg_query / PostgreSQL / PHP (recall) ---
+        r"(?i)pg_query\(\)",
+        r"(?i)pg_query_params\(\)",
+        r"(?i)pg_exec\(\)",
+        r"(?i)pg_prepare",
+        r"(?i)pg_execute",
+        r"(?i)pg_send_query",
+        r"(?i)query failed",
+        r"(?i)supplied argument is not a valid",
+        r"(?i)current transaction is aborted",
+        r"(?i)commands ignored until end of transaction",
+        r"(?i)operator does not exist",
+        r"(?i)invalid input syntax for",
+        r"(?i)could not determine (?:polymorphic |data )?type",
+        r"(?i)malformed array literal",
+        r"(?i)relation \".*\" does not exist",
+        r"(?i)column \".*\" does not exist",
+        r"(?i)function .* does not exist",
+        r"(?i)more than one row returned",
+        r"(?i)subquery .* returned more than one row",
+        r"(?i)parse error",
+        r"(?i)ERROR:\s+",
+        # --- Mensagens de erro de negócio do E-cidade / DBSeller ---
+        r"(?i)erro ao executar",
+        r"(?i)erro na execu",
+        r"(?i)falha na execu",
+        r"(?i)db_fetch",
+        r"(?i)db_query_params",
     ]
 
     def run_test(
@@ -65,15 +93,29 @@ class SqlInjectionModule(IScanModule):
         error_payloads = [
             "'",
             '"',
+            "')",
             "'-- ",
             "\")",
+            "')-- ",
+            "'))-- ",
+            "';",
+            "\\",
+            "'||'",
             f"{num_val}/0",
             f"{num_val}); SELECT 1/0; -- ",
             f"{num_val} AND 1=CAST(chr(118)||chr(117)||chr(108)||chr(110) AS integer)",
+            f"{num_val}::int4 || ''",
             f"{num_val}); SELECT 1; -- ",
+            f"{num_val})) OR ((1=1",
+            "' AND CAST('x' AS integer)=0-- ",
         ]
         if is_numeric:
-            error_payloads = [f"{original_value}'"] + error_payloads
+            # Contexto numérico sem aspas (WHERE campo = $valor) — vetor mais comum no pg_query do E-cidade
+            error_payloads = [
+                f"{original_value}'",
+                f"{original_value} AND 1=CAST('x' AS integer)",
+                f"{original_value})",
+            ] + error_payloads
 
         if "error" in self.sqli_types:
             for payload in error_payloads:
@@ -185,10 +227,15 @@ class SqlInjectionModule(IScanModule):
         if is_numeric:
             return [
                 (f"{original_value} AND 1=1", f"{original_value} AND 1=2"),
+                (f"{original_value} OR 1=1", f"{original_value} AND 1=2"),
+                (f"{original_value})) AND ((1=1", f"{original_value})) AND ((1=2"),
             ]
         return [
             ("' AND '1'='1'-- ", "' AND '1'='2'-- "),
             ('" AND "1"="1"-- ', '" AND "1"="2"-- '),
+            ("' OR '1'='1'-- ", "' OR '1'='2'-- "),
+            ("') AND ('1'='1'-- ", "') AND ('1'='2'-- "),
+            (f"{original_value}' AND '1'='1", f"{original_value}' AND '1'='2"),
         ]
 
     def _check_boolean_based(self, session, request_node, injection_point, payload_pairs):
