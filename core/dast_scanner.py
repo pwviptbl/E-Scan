@@ -25,9 +25,18 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 log = get_logger()
 
 class DastScanner:
-    def __init__(self, types="sqli,xss", param_location="all", workers=1, sqli_types="error,boolean,time"):
+    # Parâmetros estruturais/roteamento que NUNCA devem ser esvaziados no modo
+    # isolado -- sem eles a requisição nem chega na rotina certa (ou no lookup).
+    _STRUCTURAL_PARAMS = {
+        "action", "instancia", "sessao", "sessaotimeout", "funcao_js",
+        "nrwindow", "iframe", "widget", "classe", "metodo",
+        "csrf", "token", "authenticity_token", "_",
+    }
+
+    def __init__(self, types="sqli,xss", param_location="all", workers=1, sqli_types="error,boolean,time", param_isolation=False):
         self.enabled_types = [t.strip().lower() for t in types.split(",")]
         self.param_location = param_location.lower()
+        self.param_isolation = param_isolation
         self.workers = workers
         self._findings_lock = threading.Lock()
         self.modules = {}
@@ -384,7 +393,7 @@ class DastScanner:
                         "parameter_name": param_name,
                         "original_value": orig_val
                     }
-                    self._run_modules_on_point(request_node, inj_point, routine=routine, action_file=action_file)
+                    self._test_point(request_node, inj_point, routine=routine, action_file=action_file)
 
         # Testa parâmetros de Form Body
         if self.param_location in ("all", "body", "body-query"):
@@ -419,7 +428,7 @@ class DastScanner:
                         "parameter_name": param_name,
                         "original_value": orig_val
                     }
-                    self._run_modules_on_point(request_node, inj_point, routine=routine, action_file=action_file)
+                    self._test_point(request_node, inj_point, routine=routine, action_file=action_file)
 
             # Caso o body seja um JSON bruto (application/json)
             if not body_params and body:
@@ -442,6 +451,78 @@ class DastScanner:
                         self._run_modules_on_point(request_node, inj_point, routine=routine, action_file=action_file)
 
 
+
+    def _is_structural_param(self, name):
+        return (name or "").lower() in self._STRUCTURAL_PARAMS
+
+    def _isolate_request_node(self, request_node, inj_point):
+        """
+        Retorna uma CÓPIA do request_node com todos os parâmetros de negócio
+        (query string e form body urlencoded) ESVAZIADOS, exceto o parâmetro-alvo
+        e os estruturais/roteamento. Serve para forçar o backend a descer pelo
+        caminho do parâmetro-alvo em telas que consultam por "apenas um campo"
+        (padrão if/elseif típico das rotinas de CONSULTA do E-cidade).
+
+        Retorna None quando o isolamento não muda nada (0 ou 1 parâmetro de
+        negócio no total), evitando requisição duplicada.
+        """
+        from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
+
+        target = inj_point.get("param_name") or inj_point.get("parameter_name") or ""
+
+        url = request_node["url"]
+        parsed = urlparse(url)
+        query_params = parse_qs(parsed.query, keep_blank_values=True)
+
+        headers = json.loads(request_node["headers"])
+        content_type = headers.get("content-type", headers.get("Content-Type", "")) or ""
+        body = request_node.get("request_body_blob", "")
+        body_text = body.decode("utf-8", errors="ignore") if isinstance(body, bytes) else str(body or "")
+        is_urlencoded_body = bool(body_text) and ("application/x-www-form-urlencoded" in content_type or ("=" in body_text and "{" not in body_text))
+        body_params = parse_qs(body_text, keep_blank_values=True) if is_urlencoded_body else {}
+
+        # Conta parâmetros de negócio (não estruturais) em query + body
+        business = [n for n in list(query_params.keys()) + list(body_params.keys()) if not self._is_structural_param(n)]
+        if len(set(business)) <= 1:
+            return None
+
+        changed = False
+        new_query = {}
+        for name, vals in query_params.items():
+            if name == target or self._is_structural_param(name):
+                new_query[name] = vals
+            else:
+                new_query[name] = [""]
+                changed = True
+
+        new_body_params = {}
+        for name, vals in body_params.items():
+            if name == target or self._is_structural_param(name):
+                new_body_params[name] = vals
+            else:
+                new_body_params[name] = [""]
+                changed = True
+
+        if not changed:
+            return None
+
+        new_url = urlunparse(parsed._replace(query=urlencode(new_query, doseq=True)))
+        new_node = dict(request_node)
+        new_node["url"] = new_url
+        if is_urlencoded_body:
+            new_node["request_body_blob"] = urlencode(new_body_params, doseq=True)
+        return new_node
+
+    def _test_point(self, request_node, inj_point, routine="Geral", action_file=""):
+        """Testa um ponto de injeção: sempre no contexto completo (todos os
+        parâmetros preenchidos) e, se o isolamento estiver ligado, também com os
+        demais parâmetros de negócio esvaziados (um-a-um)."""
+        self._run_modules_on_point(request_node, inj_point, routine=routine, action_file=action_file)
+        if self.param_isolation and inj_point.get("location") in ("QUERY", "BODY_FORM"):
+            iso_node = self._isolate_request_node(request_node, inj_point)
+            if iso_node is not None:
+                log.debug(f"   -> [Isolado] Reteste de '{inj_point['param_name']}' com os demais campos vazios")
+                self._run_modules_on_point(iso_node, inj_point, routine=routine, action_file=action_file)
 
     def _run_modules_on_point(self, request_node, inj_point, routine="Geral", action_file=""):
         log.debug(f"   -> [Ativo] Testando {inj_point['location']}: '{inj_point['param_name']}'...")

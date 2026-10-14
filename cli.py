@@ -19,6 +19,27 @@ from core.proxy_daemon import ProxyDaemon
 from core.dast_scanner import DastScanner
 from core.defectdojo_client import load_dojo_config, upload_scan_to_defectdojo
 from core.logging_config import setup_logging
+import unicodedata
+
+
+def _normalize_text(s):
+    """Minúsculas sem acento, para comparar escopo/categoria de forma robusta."""
+    if not s:
+        return ""
+    nf = unicodedata.normalize("NFKD", str(s))
+    return "".join(c for c in nf if not unicodedata.combining(c)).lower().strip()
+
+
+def _resolve_param_isolation(mode, scope_text):
+    """Decide se o isolamento de parâmetro fica ligado.
+    mode: 'auto' (liga quando o escopo for de CONSULTAS), 'on' ou 'off'."""
+    mode = (mode or "auto").lower()
+    if mode == "on":
+        return True
+    if mode == "off":
+        return False
+    return "consulta" in _normalize_text(scope_text)
+
 
 @click.group()
 def main():
@@ -39,6 +60,7 @@ def main():
 @click.option("--types", default="sqli,xss", help="Módulos de auditoria ativa (sqli, xss, lfi, idor, ssti, redirect, header).", show_default=True)
 @click.option("--sqli-types", default="error,boolean,time", help="Subtipos de SQLi: error,boolean,time.", show_default=True)
 @click.option("--params", type=click.Choice(["body", "body-query", "all"]), default="all", help="Onde injetar payloads.", show_default=True)
+@click.option("--param-isolation", type=click.Choice(["auto", "on", "off"]), default="auto", help="Testa cada parâmetro também isolado (demais campos vazios), pegando rotinas que consultam por um campo só. 'auto' liga quando a categoria for de CONSULTAS.", show_default=True)
 @click.option("--active-only", is_flag=True, default=False, help="Executa apenas testes ativos (ignora checagens passivas de cookies/headers).")
 @click.option("--workers", default=1, type=int, help="Paralelismo: número de rotas testadas simultaneamente.", show_default=True)
 @click.option("--campaign-out", default=None, help="Arquivo JSON para exportação da campanha (padrão: nome gerado por data/escopo).")
@@ -50,7 +72,7 @@ def main():
 @click.option("--dojo-upload", is_flag=True, default=False, help="Força envio ao DefectDojo usando config/defectdojo.json.")
 @click.option("--fail-on-findings", is_flag=True, default=False, help="Retorna Exit Code 1 se encontrar vulnerabilidades Críticas/Altas (CI/CD).")
 @click.option("--verbose", "-v", is_flag=True, default=False, help="Loga diagnóstico detalhado do motor (nível DEBUG) no console.")
-def run_dast(url, area, modulo, categoria, subcategoria, rotina, max_routines, spec, port, scan_mode, types, sqli_types, params, active_only, workers, campaign_out, report, dojo_product, dojo_engagement, dojo_test_id, dojo_test_title, dojo_upload, fail_on_findings, verbose):
+def run_dast(url, area, modulo, categoria, subcategoria, rotina, max_routines, spec, port, scan_mode, types, sqli_types, params, param_isolation, active_only, workers, campaign_out, report, dojo_product, dojo_engagement, dojo_test_id, dojo_test_title, dojo_upload, fail_on_findings, verbose):
     """Executa o ciclo completo de DAST: sobe proxy, navega com Cypress, audita e gera relatório."""
     setup_logging(verbose=verbose)
     start_time = time.time()
@@ -89,9 +111,12 @@ def run_dast(url, area, modulo, categoria, subcategoria, rotina, max_routines, s
         "Modo de Auditoria": scan_mode.upper(),
         "Testes Ativos": types.upper(),
         "Injeção em Parâmetros": params,
+        "Isolamento de Parâmetro": param_isolation,
         "Arquivo Campanha": actual_campaign_out,
         "Arquivo Relatório": actual_report
     }
+
+    do_isolation = _resolve_param_isolation(param_isolation, " ".join(filter(None, [categoria, subcategoria, rotina])))
 
     click.echo(click.style("=" * 75, fg="cyan"))
     click.echo(click.style(" 🚀 INICIANDO ECIDADE-DAST (HEADLESS / CI-CD) ", bold=True, fg="cyan"))
@@ -100,12 +125,13 @@ def run_dast(url, area, modulo, categoria, subcategoria, rotina, max_routines, s
     click.echo(f"• Alvo: {url}")
     click.echo(f"• Escopo: {' > '.join(slug_parts)}")
     click.echo(f"• Modo de Scan: {scan_mode.upper()} | Testes Ativos: {types.upper()}")
+    click.echo(f"• Isolamento de Parâmetro: {param_isolation} ({'LIGADO' if do_isolation else 'desligado'})")
     click.echo(f"• Arquivo Campanha: {actual_campaign_out}")
     click.echo(f"• Arquivo Relatório: {actual_report}")
     click.echo(f"• Porta Proxy: {port}")
 
     # 1. Inicia Proxy Daemon em Background
-    scanner = DastScanner(types=types, param_location=params, workers=workers, sqli_types=sqli_types)
+    scanner = DastScanner(types=types, param_location=params, workers=workers, sqli_types=sqli_types, param_isolation=do_isolation)
 
     def on_live_route(entry):
         if scan_mode == "live":
@@ -296,6 +322,7 @@ def run_dast(url, area, modulo, categoria, subcategoria, rotina, max_routines, s
 @click.option("--types", default="sqli,xss", help="Módulos de auditoria ativa (sqli, xss, lfi, idor, ssti, redirect, header).", show_default=True)
 @click.option("--sqli-types", default="error,boolean,time", help="Subtipos de SQLi: error,boolean,time.", show_default=True)
 @click.option("--params", type=click.Choice(["body", "body-query", "all"]), default="all", help="Onde injetar payloads.", show_default=True)
+@click.option("--param-isolation", type=click.Choice(["auto", "on", "off"]), default="auto", help="Testa cada parâmetro também isolado (demais campos vazios). 'auto' liga quando o escopo da campanha for de CONSULTAS.", show_default=True)
 @click.option("--active-only", is_flag=True, default=True, help="Executa apenas testes ativos (ignora passivos de cookies/headers).", show_default=True)
 @click.option("--workers", default=1, type=int, help="Paralelismo: número de rotas testadas simultaneamente.", show_default=True)
 @click.option("--report", default=None, help="Arquivo Markdown para o relatório final.")
@@ -306,7 +333,7 @@ def run_dast(url, area, modulo, categoria, subcategoria, rotina, max_routines, s
 @click.option("--dojo-upload", is_flag=True, default=False, help="Força envio ao DefectDojo usando config/defectdojo.json.")
 @click.option("--fail-on-findings", is_flag=True, default=False, help="Retorna Exit Code 1 se encontrar vulnerabilidades Críticas/Altas.")
 @click.option("--verbose", "-v", is_flag=True, default=False, help="Loga diagnóstico detalhado do motor (nível DEBUG) no console.")
-def scan_campaign_cmd(campaign, types, sqli_types, params, active_only, workers, report, dojo_product, dojo_engagement, dojo_test_id, dojo_test_title, dojo_upload, fail_on_findings, verbose):
+def scan_campaign_cmd(campaign, types, sqli_types, params, param_isolation, active_only, workers, report, dojo_product, dojo_engagement, dojo_test_id, dojo_test_title, dojo_upload, fail_on_findings, verbose):
     """Executa auditoria diretamente sobre uma campanha salva, sem rodar o Cypress."""
     setup_logging(verbose=verbose)
     start_time = time.time()
@@ -334,11 +361,14 @@ def scan_campaign_cmd(campaign, types, sqli_types, params, active_only, workers,
     click.echo(f"• Arquivo Campanha: {campaign}")
     click.echo(f"• Alvo: {target_url}")
     click.echo(f"• Escopo: {scope_str}")
+    do_isolation = _resolve_param_isolation(param_isolation, f"{scope_str} {meta.get('Categoria', '')}")
+
     click.echo(f"• Modo Ativo Estrito: {'SIM' if active_only else 'NÃO'}")
     click.echo(f"• Módulos Ativos: {types.upper()}")
+    click.echo(f"• Isolamento de Parâmetro: {param_isolation} ({'LIGADO' if do_isolation else 'desligado'})")
     click.echo(f"• Relatório Destino: {actual_report}")
 
-    scanner = DastScanner(types=types, param_location=params, workers=workers, sqli_types=sqli_types)
+    scanner = DastScanner(types=types, param_location=params, workers=workers, sqli_types=sqli_types, param_isolation=do_isolation)
     scanner.scan_campaign(campaign_data, active_only=active_only)
 
     report_file = scanner.generate_markdown_report(
