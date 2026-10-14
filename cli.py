@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 from core.proxy_daemon import ProxyDaemon
 from core.dast_scanner import DastScanner
 from core.defectdojo_client import load_dojo_config, upload_scan_to_defectdojo
+from core.logging_config import setup_logging
 
 @click.group()
 def main():
@@ -35,7 +36,7 @@ def main():
 @click.option("--spec", default="cypress/e2e/dast_crawler.cy.js", help="Arquivo de teste Cypress a executar.", show_default=True)
 @click.option("--port", default=9507, type=int, help="Porta local do proxy de captura.", show_default=True)
 @click.option("--scan-mode", type=click.Choice(["batch", "live"]), default="batch", help="Modo de auditoria: batch ou live.", show_default=True)
-@click.option("--types", default="sqli,xss", help="Módulos de auditoria ativa (sqli, xss, lfi, idor).", show_default=True)
+@click.option("--types", default="sqli,xss", help="Módulos de auditoria ativa (sqli, xss, lfi, idor, ssti, redirect, header).", show_default=True)
 @click.option("--sqli-types", default="error,boolean,time", help="Subtipos de SQLi: error,boolean,time.", show_default=True)
 @click.option("--params", type=click.Choice(["body", "body-query", "all"]), default="all", help="Onde injetar payloads.", show_default=True)
 @click.option("--active-only", is_flag=True, default=False, help="Executa apenas testes ativos (ignora checagens passivas de cookies/headers).")
@@ -48,8 +49,10 @@ def main():
 @click.option("--dojo-test-title", default=None, help="Título descritivo do teste no DefectDojo.")
 @click.option("--dojo-upload", is_flag=True, default=False, help="Força envio ao DefectDojo usando config/defectdojo.json.")
 @click.option("--fail-on-findings", is_flag=True, default=False, help="Retorna Exit Code 1 se encontrar vulnerabilidades Críticas/Altas (CI/CD).")
-def run_dast(url, area, modulo, categoria, subcategoria, rotina, max_routines, spec, port, scan_mode, types, sqli_types, params, active_only, workers, campaign_out, report, dojo_product, dojo_engagement, dojo_test_id, dojo_test_title, dojo_upload, fail_on_findings):
+@click.option("--verbose", "-v", is_flag=True, default=False, help="Loga diagnóstico detalhado do motor (nível DEBUG) no console.")
+def run_dast(url, area, modulo, categoria, subcategoria, rotina, max_routines, spec, port, scan_mode, types, sqli_types, params, active_only, workers, campaign_out, report, dojo_product, dojo_engagement, dojo_test_id, dojo_test_title, dojo_upload, fail_on_findings, verbose):
     """Executa o ciclo completo de DAST: sobe proxy, navega com Cypress, audita e gera relatório."""
+    setup_logging(verbose=verbose)
     start_time = time.time()
     now_dt = datetime.now()
     timestamp_str = now_dt.strftime("%Y%m%d_%H%M%S")
@@ -290,7 +293,7 @@ def run_dast(url, area, modulo, categoria, subcategoria, rotina, max_routines, s
 
 @main.command("scan")
 @click.option("--campaign", default="logs/campaign_latest.json", help="Arquivo JSON de campanha já capturada.", show_default=True)
-@click.option("--types", default="sqli,xss", help="Módulos de auditoria ativa (sqli, xss, lfi, idor).", show_default=True)
+@click.option("--types", default="sqli,xss", help="Módulos de auditoria ativa (sqli, xss, lfi, idor, ssti, redirect, header).", show_default=True)
 @click.option("--sqli-types", default="error,boolean,time", help="Subtipos de SQLi: error,boolean,time.", show_default=True)
 @click.option("--params", type=click.Choice(["body", "body-query", "all"]), default="all", help="Onde injetar payloads.", show_default=True)
 @click.option("--active-only", is_flag=True, default=True, help="Executa apenas testes ativos (ignora passivos de cookies/headers).", show_default=True)
@@ -302,8 +305,10 @@ def run_dast(url, area, modulo, categoria, subcategoria, rotina, max_routines, s
 @click.option("--dojo-test-title", default=None, help="Título descritivo do teste no DefectDojo.")
 @click.option("--dojo-upload", is_flag=True, default=False, help="Força envio ao DefectDojo usando config/defectdojo.json.")
 @click.option("--fail-on-findings", is_flag=True, default=False, help="Retorna Exit Code 1 se encontrar vulnerabilidades Críticas/Altas.")
-def scan_campaign_cmd(campaign, types, sqli_types, params, active_only, workers, report, dojo_product, dojo_engagement, dojo_test_id, dojo_test_title, dojo_upload, fail_on_findings):
+@click.option("--verbose", "-v", is_flag=True, default=False, help="Loga diagnóstico detalhado do motor (nível DEBUG) no console.")
+def scan_campaign_cmd(campaign, types, sqli_types, params, active_only, workers, report, dojo_product, dojo_engagement, dojo_test_id, dojo_test_title, dojo_upload, fail_on_findings, verbose):
     """Executa auditoria diretamente sobre uma campanha salva, sem rodar o Cypress."""
+    setup_logging(verbose=verbose)
     start_time = time.time()
     now_dt = datetime.now()
     timestamp_str = now_dt.strftime("%Y%m%d_%H%M%S")
@@ -472,9 +477,6 @@ def dojo_import_cmd(findings_file, product, engagement, test_id, test_title):
         click.echo(click.style(f"[-] Falha no envio para o DefectDojo ({mode}): {res}", fg="red", bold=True))
         sys.exit(1)
 
-if __name__ == "__main__":
-    main()
-
 @main.command("dojo-status")
 @click.argument("test_id", type=int)
 def dojo_status_cmd(test_id):
@@ -519,3 +521,7 @@ def dojo_clean_cmd(test_id, force):
     else:
         click.echo(click.style(f"[-] Falha parcial/total: {msg}. Removidas: {count}", fg="red"))
         sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

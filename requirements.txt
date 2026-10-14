@@ -1,3 +1,5 @@
-mitmproxy>=10.0.0
-click>=8.0.0
-requests>=2.28.0
+# Versões fixadas para reprodutibilidade em CI/CD.
+# Atualize conscientemente e re-teste o scanner após subir qualquer uma.
+mitmproxy==11.0.2
+click==8.5.0
+requests==2.34.2

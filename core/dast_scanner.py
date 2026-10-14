@@ -10,13 +10,19 @@ import time
 import requests
 from urllib.parse import urlparse, parse_qs
 from core.vulnerability import Vulnerability
+from core.logging_config import get_logger
 from scanners.sqli_module import SqlInjectionModule
 from scanners.xss_module import XssModule
 from scanners.lfi_module import LfiModule
 from scanners.idor_module import IdorModule
+from scanners.ssti_module import SstiModule
+from scanners.open_redirect_module import OpenRedirectModule
+from scanners.header_injection_module import HeaderInjectionModule
 
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+log = get_logger()
 
 class DastScanner:
     def __init__(self, types="sqli,xss", param_location="all", workers=1, sqli_types="error,boolean,time"):
@@ -37,6 +43,12 @@ class DastScanner:
             self.modules["LFI"] = LfiModule()
         if "idor" in self.enabled_types:
             self.modules["IDOR"] = IdorModule()
+        if "ssti" in self.enabled_types:
+            self.modules["SSTI"] = SstiModule()
+        if "redirect" in self.enabled_types or "open_redirect" in self.enabled_types:
+            self.modules["OpenRedirect"] = OpenRedirectModule()
+        if "header" in self.enabled_types or "header_injection" in self.enabled_types:
+            self.modules["HeaderInjection"] = HeaderInjectionModule()
 
         self.findings = []
 
@@ -186,7 +198,7 @@ class DastScanner:
         route["action_file"] = action_file
 
         routine_display = f" | Rotina: {routine}" if routine else ""
-        print(f"[{idx}/{total}] {method} {url}{routine_display}")
+        log.info(f"[{idx}/{total}] {method} {url}{routine_display}")
 
         if not active_only:
             self._passive_audit(route)
@@ -195,7 +207,7 @@ class DastScanner:
     def scan_campaign(self, campaign_data, active_only=False):
         routes = campaign_data.get("routes", [])
         scan_label = "ATIVO (Apenas injeções)" if active_only else "COMPLETO (Ativo + Passivo)"
-        print(f"\n[*] Iniciando auditoria DAST [{scan_label}] em {len(routes)} rotas testáveis...")
+        log.info(f"\n[*] Iniciando auditoria DAST [{scan_label}] em {len(routes)} rotas testáveis...")
 
         # Carrega mapa de rotinas da campanha ou do disco
         self.routines_map = campaign_data.get("routines_map") or {}
@@ -349,7 +361,7 @@ class DastScanner:
                     leaves = self._extract_json_leaves(parsed_json)
                     for json_path, leaf_val, key_name in leaves:
                         if self._is_ignored_param(key_name):
-                            print(f"   -> [Skip] Chave JSON ignorada (ignore_params): '{param_name} -> {json_path}'")
+                            log.debug(f"   -> [Skip] Chave JSON ignorada (ignore_params): '{param_name} -> {json_path}'")
                             continue
                         inj_point = {
                             "id": 1,
@@ -363,7 +375,7 @@ class DastScanner:
                         self._run_modules_on_point(request_node, inj_point, routine=routine, action_file=action_file)
                 else:
                     if self._is_ignored_param(param_name):
-                        print(f"   -> [Skip] Parâmetro ignorado (ignore_params): '{param_name}'")
+                        log.debug(f"   -> [Skip] Parâmetro ignorado (ignore_params): '{param_name}'")
                         continue
                     inj_point = {
                         "id": 1,
@@ -384,7 +396,7 @@ class DastScanner:
                     leaves = self._extract_json_leaves(parsed_json)
                     for json_path, leaf_val, key_name in leaves:
                         if self._is_ignored_param(key_name):
-                            print(f"   -> [Skip] Chave JSON ignorada (ignore_params): '{param_name} -> {json_path}'")
+                            log.debug(f"   -> [Skip] Chave JSON ignorada (ignore_params): '{param_name} -> {json_path}'")
                             continue
                         inj_point = {
                             "id": 1,
@@ -398,7 +410,7 @@ class DastScanner:
                         self._run_modules_on_point(request_node, inj_point, routine=routine, action_file=action_file)
                 else:
                     if self._is_ignored_param(param_name):
-                        print(f"   -> [Skip] Parâmetro ignorado (ignore_params): '{param_name}'")
+                        log.debug(f"   -> [Skip] Parâmetro ignorado (ignore_params): '{param_name}'")
                         continue
                     inj_point = {
                         "id": 1,
@@ -417,7 +429,7 @@ class DastScanner:
                     leaves = self._extract_json_leaves(parsed_raw_json)
                     for json_path, leaf_val, key_name in leaves:
                         if self._is_ignored_param(key_name):
-                            print(f"   -> [Skip] Chave JSON ignorada (ignore_params): 'JSON -> {json_path}'")
+                            log.debug(f"   -> [Skip] Chave JSON ignorada (ignore_params): 'JSON -> {json_path}'")
                             continue
                         inj_point = {
                             "id": 1,
@@ -432,7 +444,7 @@ class DastScanner:
 
 
     def _run_modules_on_point(self, request_node, inj_point, routine="Geral", action_file=""):
-        print(f"   -> [Ativo] Testando {inj_point['location']}: '{inj_point['param_name']}'...")
+        log.debug(f"   -> [Ativo] Testando {inj_point['location']}: '{inj_point['param_name']}'...")
         for mod_name, mod_instance in self.modules.items():
             try:
                 vulns = mod_instance.run_test(request_node, inj_point, oast_client=None)
@@ -451,15 +463,16 @@ class DastScanner:
                                 "evidence": str(v.evidence)[:300],
                                 "description": v.description
                             })
-                        print(f"      [!] VULNERABILIDADE DETECTADA: [{v.severity}] {v.name} em {inj_point['param_name']} (Rotina: {routine})")
+                        log.warning(f"      [!] VULNERABILIDADE DETECTADA: [{v.severity}] {v.name} em {inj_point['param_name']} (Rotina: {routine})")
             except requests.exceptions.ConnectionError as e:
-                print(f"      -> [ERRO CONEXÃO] Falha ao testar '{inj_point['param_name']}': O container PHP caiu ou recusou conexão.")
+                log.error(f"      -> [ERRO CONEXÃO] Falha ao testar '{inj_point['param_name']}': O container PHP caiu ou recusou conexão.")
             except requests.exceptions.Timeout:
-                print(f"      -> [TIMEOUT] Tempo excedido no teste de '{inj_point['param_name']}'")
+                log.error(f"      -> [TIMEOUT] Tempo excedido no teste de '{inj_point['param_name']}'")
             except Exception as e:
-                print(f"      -> [ERRO INESPERADO] {mod_name} falhou em '{inj_point['param_name']}': {e}")
+                log.error(f"      -> [ERRO INESPERADO] {mod_name} falhou em '{inj_point['param_name']}': {e}")
 
     def generate_markdown_report(self, output_path="reports/relatorio_dast.md", metadata=None):
+        self._deduplicate_findings()
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
         meta = metadata or {}
         now = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -535,7 +548,7 @@ class DastScanner:
         with open(output_path, "w", encoding="utf-8") as f:
             f.write("\n".join(content))
 
-        print(f"\n[+] Relatório DAST gerado em: {output_path}")
+        log.info(f"\n[+] Relatório DAST gerado em: {output_path}")
         return output_path
 
     def _deduplicate_findings(self):
@@ -670,5 +683,5 @@ class DastScanner:
         with open(output_path, "w", encoding="utf-8") as out:
             json.dump(data, out, indent=2, ensure_ascii=False)
 
-        print(f"[+] Relatório DefectDojo gerado em: {output_path}")
+        log.info(f"[+] Relatório DefectDojo gerado em: {output_path}")
         return output_path

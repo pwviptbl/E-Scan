@@ -14,6 +14,9 @@ from mitmproxy import options, http
 from mitmproxy.tools.dump import DumpMaster
 from core.campaign import build_campaign, is_static_resource
 from core.ignore_rules import is_ignored_url, has_valid_php_parameters
+from core.logging_config import get_logger
+
+log = get_logger()
 
 class DastCaptureAddon:
     def __init__(self, target_scope=None, on_new_route_callback=None):
@@ -147,7 +150,7 @@ class ProxyDaemon:
         self.thread = threading.Thread(target=_run, daemon=True)
         self.thread.start()
         self.ready_event.wait(timeout=5)
-        print(f"[+] Proxy DAST iniciado em http://127.0.0.1:{self.port}")
+        log.info(f"[+] Proxy DAST iniciado em http://127.0.0.1:{self.port}")
 
     def stop(self):
         if self.master:
@@ -157,7 +160,7 @@ class ProxyDaemon:
                 pass
         if self.thread:
             self.thread.join(timeout=3)
-        print(f"[+] Proxy DAST encerrado.")
+        log.info(f"[+] Proxy DAST encerrado.")
 
     def export_campaign(self, output_file="logs/campaign.json", campaign_name="ecidade-dast", metadata=None):
         os.makedirs(os.path.dirname(output_file) or ".", exist_ok=True)
@@ -185,7 +188,7 @@ class ProxyDaemon:
             json.dump(campaign, f, indent=2, ensure_ascii=False)
 
         stats = campaign.get("stats", {})
-        print(f"[+] Campanha exportada para {output_file}")
-        print(f"    - Requisições capturadas: {stats.get('input', 0)}")
-        print(f"    - Rotas testáveis: {stats.get('routes', 0)}")
+        log.info(f"[+] Campanha exportada para {output_file}")
+        log.info(f"    - Requisições capturadas: {stats.get('input', 0)}")
+        log.info(f"    - Rotas testáveis: {stats.get('routes', 0)}")
         return campaign

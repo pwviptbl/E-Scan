@@ -19,6 +19,7 @@ cypress/downloads/
 
 # Execution outputs
 logs/*.json
+logs/*.log
 reports/*.md
 reports/*.json
 !reports/.gitkeep
