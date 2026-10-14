@@ -119,6 +119,20 @@ Cypress.Commands.add("ensureEcidadeMenuOpen", () => {
  */
 Cypress.Commands.add("fuzzGenericForm", () => {
   cy.document().then((doc) => {
+    // Dispara a cadeia de eventos legados do E-cidade (onkeyup/onchange/onblur)
+    // depois de preencher um campo. Isso faz os lookups de chave estrangeira
+    // (ex: func_iptubase.php?pesquisa_chave=...) dispararem de verdade e serem
+    // capturados pelo proxy como rotas testaveis. Mesmo que a validacao limpe o
+    // campo em seguida, a requisicao do lookup ja saiu.
+    function fireLegacyEvents($el) {
+      try {
+        $el.trigger("input");
+        $el.trigger(Cypress.$.Event("keyup", { keyCode: 13, which: 13 }));
+        $el.trigger("change");
+        $el.trigger("blur");
+      } catch (e) {}
+    }
+
     // Procura em todas as janelas e iframes abertos
     function processFormInElement($root) {
       // 1. Trata campos CGM genericos (*cgm / *numcgm)
@@ -129,7 +143,7 @@ Cypress.Commands.add("fuzzGenericForm", () => {
           const name = ($el.attr("name") || "").toLowerCase();
           if (!$el.prop("readonly") && !$el.prop("disabled") && !$el.val() && !name.includes("nome") && !name.includes("descr")) {
             $el.val("6");
-            $el.trigger("change");
+            fireLegacyEvents($el);
           }
         });
       }
@@ -170,8 +184,22 @@ Cypress.Commands.add("fuzzGenericForm", () => {
         const name = ($el.attr("name") || "").toLowerCase();
         if (!$el.prop("readonly") && !$el.prop("disabled") && !$el.val() && !name.includes("cgm") && !name.includes("dt") && !name.includes("data") && !name.endsWith("_dia") && !name.endsWith("_mes") && !name.endsWith("_ano")) {
           $el.val(name.includes("login") ? `dast_${Date.now().toString().slice(-5)}` : "1");
-          $el.trigger("input");
+          fireLegacyEvents($el);
         }
+      });
+
+      // 5b. Abre telas auxiliares (busca/lookup) acionadas por ancoras legadas.
+      // No E-cidade, clicar no label (ex: <a class="DBAncora" onclick=
+      // "js_mostranomes(true)">Nome/Razao Social</a>) abre uma nova tela de
+      // busca que e, ela propria, uma rotina a ser testada. Clicar dispara a
+      // requisicao que a abre -- capturada pelo proxy -- e, se a tela vier como
+      // novo iframe, a varredura recursiva (scanAndProcessIframes) a processa.
+      $root.find("a.DBAncora[onclick], a[onclick*='js_mostra'], a[onclick*='js_abre'], a[onclick*='js_pesquisa']").each((_, el) => {
+        try {
+          const oc = (Cypress.$(el).attr("onclick") || "").slice(0, 60);
+          cy.task("log", `[DAST Debug] -> Abrindo tela auxiliar via ancora: ${oc}`);
+          el.click();
+        } catch (e) {}
       });
 
       // 6. Clica no botao de acao principal.
